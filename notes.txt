@@ -6,3 +6,5 @@ Improve conservation scores
 Mapping for 3d
 
 Include functional regions for the scoring
+
+Add a page to search for a disease from pubmed and so on and summarize with ai
