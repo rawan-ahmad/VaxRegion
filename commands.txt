@@ -1,0 +1,4 @@
+deactivate
+conda activate bioenv
+streamlit run file.py
+control c

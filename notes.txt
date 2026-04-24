@@ -1,0 +1,8 @@
+Weakly supervised model -> the labels come from our rule based priority system
+-> to strengthen the project, we should replace these labels with experimentally validated positives/negatives
+
+Improve conservation scores
+
+Mapping for 3d
+
+Include functional regions for the scoring
