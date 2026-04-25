@@ -1,10 +1,4 @@
-Weakly supervised model -> the labels come from our rule based priority system
--> to strengthen the project, we should replace these labels with experimentally validated positives/negatives
-
-Improve conservation scores
-
-Mapping for 3d
-
-Include functional regions for the scoring
-
-Add a page to search for a disease from pubmed and so on and summarize with ai
+Added openai for summarizing pubmed articles
+Automated uniprot and pdb accession ids.
+Improved design and removed ml.
+Improved visualization

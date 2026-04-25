@@ -5,6 +5,7 @@ import matplotlib.pyplot as plt
 import math
 import time
 import os
+import re
 import subprocess
 import requests
 import tempfile
@@ -13,10 +14,6 @@ from collections import Counter
 from Bio import Entrez, SeqIO, AlignIO, pairwise2
 from Bio.PDB import MMCIFParser, is_aa
 
-from sklearn.ensemble import RandomForestClassifier
-from sklearn.model_selection import train_test_split
-from sklearn.metrics import accuracy_score, f1_score, classification_report
-from sklearn.preprocessing import LabelEncoder
 
 # pip install py3Dmol stmol
 try:
@@ -35,18 +32,47 @@ st.set_page_config(
 # styling
 st.markdown("""
 <style>
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800;900&display=swap');
+
+    :root {
+        --ink: #0f172a;
+        --muted: #64748b;
+        --blue: #2563eb;
+        --violet: #7c3aed;
+        --cyan: #06b6d4;
+        --pink: #db2777;
+        --green: #16a34a;
+        --amber: #f59e0b;
+        --card: rgba(255,255,255,0.86);
+        --border: rgba(148,163,184,0.22);
+    }
+
+    html, body, [class*="css"] {
+        font-family: 'Inter', sans-serif;
+    }
+
     .stApp {
-        background: linear-gradient(135deg, #f8fbff 0%, #eef5ff 45%, #f7f0ff 100%);
+        background:
+            radial-gradient(circle at 10% 10%, rgba(37,99,235,0.18), transparent 28%),
+            radial-gradient(circle at 90% 20%, rgba(219,39,119,0.16), transparent 28%),
+            radial-gradient(circle at 50% 95%, rgba(6,182,212,0.13), transparent 30%),
+            linear-gradient(135deg, #f8fbff 0%, #eef5ff 48%, #fbf7ff 100%);
+        color: var(--ink);
     }
 
     .main .block-container {
-        padding-top: 2rem;
+        padding-top: 1.4rem;
         padding-bottom: 3rem;
-        max-width: 1300px;
+        max-width: 1380px;
     }
 
+    /* Sidebar */
     [data-testid="stSidebar"] {
-        background: linear-gradient(180deg, #0f172a 0%, #1e293b 55%, #312e81 100%);
+        background:
+            radial-gradient(circle at top left, rgba(34,211,238,0.16), transparent 34%),
+            linear-gradient(180deg, #07111f 0%, #111827 45%, #312e81 100%);
+        border-right: 1px solid rgba(255,255,255,0.12);
+        box-shadow: 12px 0 30px rgba(15,23,42,0.12);
     }
 
     [data-testid="stSidebar"] * {
@@ -55,261 +81,446 @@ st.markdown("""
 
     [data-testid="stSidebar"] input,
     [data-testid="stSidebar"] textarea {
-        background-color: #f8fafc !important;
+        background: rgba(248,250,252,0.95) !important;
         color: #0f172a !important;
-        border-radius: 10px !important;
+        border-radius: 14px !important;
+        border: 1px solid rgba(226,232,240,0.55) !important;
     }
 
     [data-testid="stSidebar"] .stSlider label,
     [data-testid="stSidebar"] .stNumberInput label,
     [data-testid="stSidebar"] .stTextInput label,
-    [data-testid="stSidebar"] .stTextArea label {
-        font-weight: 600 !important;
+    [data-testid="stSidebar"] .stTextArea label,
+    [data-testid="stSidebar"] .stCheckbox label {
+        font-weight: 800 !important;
     }
 
-    .hero-card {
-        background: linear-gradient(120deg, #1e3a8a 0%, #4f46e5 50%, #7c3aed 100%);
-        border-radius: 24px;
-        padding: 34px 38px;
-        margin-bottom: 24px;
-        box-shadow: 0 20px 45px rgba(30, 58, 138, 0.22);
+    [data-testid="stSidebar"] hr {
+        border-color: rgba(255,255,255,0.16);
+    }
+
+    /* Hero */
+    .fun-hero-card {
+        background:
+            linear-gradient(135deg, rgba(15,23,42,0.10), rgba(255,255,255,0.02)),
+            radial-gradient(circle at top left, rgba(34,211,238,0.55), transparent 30%),
+            radial-gradient(circle at 85% 20%, rgba(244,114,182,0.42), transparent 33%),
+            linear-gradient(120deg, #172554 0%, #3730a3 44%, #7e22ce 100%);
+        border-radius: 34px;
+        padding: 42px 46px;
+        margin-bottom: 20px;
+        box-shadow: 0 28px 70px rgba(49,46,129,0.30);
         color: white;
+        position: relative;
+        overflow: hidden;
+        border: 1px solid rgba(255,255,255,0.18);
     }
 
-    .hero-title {
-        font-size: 2.4rem;
-        font-weight: 800;
-        margin-bottom: 8px;
-        letter-spacing: -0.03em;
+    .fun-hero-card:after {
+        content: "";
+        position: absolute;
+        right: -80px;
+        top: -80px;
+        width: 260px;
+        height: 260px;
+        border-radius: 50%;
+        background: rgba(255,255,255,0.10);
+        filter: blur(2px);
     }
 
-    .hero-subtitle {
-        font-size: 1.05rem;
-        line-height: 1.7;
+    .fun-hero-title {
+        font-size: 2.9rem;
+        font-weight: 950;
+        margin-bottom: 10px;
+        letter-spacing: -0.055em;
+        line-height: 1.04;
+    }
+
+    .fun-hero-subtitle {
+        font-size: 1.08rem;
+        line-height: 1.75;
         color: #e0e7ff;
         max-width: 980px;
     }
 
+    .fun-chip {
+        display: inline-block;
+        padding: 9px 14px;
+        background: rgba(255,255,255,0.16);
+        border: 1px solid rgba(255,255,255,0.28);
+        border-radius: 999px;
+        margin-right: 8px;
+        margin-top: 18px;
+        font-size: 0.88rem;
+        color: #ffffff;
+        font-weight: 850;
+        backdrop-filter: blur(8px);
+    }
+
+    /* Website nav */
+    .website-nav {
+        background: rgba(255,255,255,0.78);
+        border: 1px solid rgba(129,140,248,0.24);
+        border-radius: 999px;
+        padding: 10px 14px;
+        margin: 0 0 18px 0;
+        box-shadow: 0 18px 42px rgba(79,70,229,0.11);
+        backdrop-filter: blur(14px);
+    }
+
+    .website-nav-title {
+        font-weight: 950;
+        color: #312e81;
+        padding-top: 8px;
+        font-size: 1.08rem;
+        letter-spacing: -0.03em;
+    }
+
+    .top-nav-active {
+        background: linear-gradient(90deg, #ecfeff 0%, #eef2ff 50%, #fce7f3 100%);
+        border: 1px solid rgba(124,58,237,0.18);
+        color: #312e81;
+        border-radius: 999px;
+        padding: 10px 18px;
+        font-weight: 900;
+        text-align: center;
+        box-shadow: 0 10px 22px rgba(124,58,237,0.11);
+        margin-bottom: 20px;
+    }
+
+    /* Cards */
     .section-card {
-        background: rgba(255, 255, 255, 0.88);
-        border: 1px solid rgba(148, 163, 184, 0.28);
-        border-radius: 20px;
-        padding: 22px 24px;
-        box-shadow: 0 12px 28px rgba(15, 23, 42, 0.08);
-        margin-bottom: 18px;
+        background: var(--card);
+        border: 1px solid var(--border);
+        border-radius: 28px;
+        padding: 26px 28px;
+        box-shadow: 0 18px 42px rgba(15,23,42,0.08);
+        margin-bottom: 20px;
+        backdrop-filter: blur(12px);
+    }
+
+    .section-card h2, .section-card h3 {
+        color: #172554;
+        letter-spacing: -0.03em;
     }
 
     .small-note {
-        background: #eef2ff;
+        background: linear-gradient(90deg, #eef2ff 0%, #f8fafc 100%);
         color: #3730a3;
         border-left: 5px solid #6366f1;
-        border-radius: 14px;
-        padding: 12px 16px;
-        margin-top: 8px;
-        font-size: 0.95rem;
+        border-radius: 16px;
+        padding: 13px 16px;
+        margin-top: 10px;
+        font-size: 0.94rem;
+        box-shadow: inset 0 0 0 1px rgba(99,102,241,0.08);
     }
 
-    div[data-testid="stMetric"] {
-        background: rgba(255, 255, 255, 0.95);
-        border: 1px solid rgba(99, 102, 241, 0.18);
-        border-radius: 18px;
-        padding: 18px;
-        box-shadow: 0 10px 24px rgba(30, 41, 59, 0.08);
+    .home-cta {
+        background:
+            radial-gradient(circle at top left, rgba(34,211,238,0.18), transparent 38%),
+            linear-gradient(120deg, rgba(239,246,255,0.95), rgba(245,243,255,0.95));
+        border: 1px solid rgba(99,102,241,0.20);
+        border-radius: 26px;
+        padding: 26px;
+        margin-top: 20px;
+        box-shadow: 0 18px 38px rgba(79,70,229,0.08);
     }
 
-    div[data-testid="stMetricLabel"] {
-        font-weight: 700;
-        color: #475569;
-    }
-
-    div[data-testid="stMetricValue"] {
-        color: #3730a3;
-        font-weight: 800;
-    }
-
-    .stButton > button {
-        background: linear-gradient(90deg, #2563eb 0%, #7c3aed 100%);
-        color: white;
-        border: none;
-        border-radius: 14px;
-        padding: 0.75rem 1.4rem;
-        font-weight: 700;
-        box-shadow: 0 10px 22px rgba(79, 70, 229, 0.25);
-    }
-
-    .stButton > button:hover {
-        transform: translateY(-1px);
-        box-shadow: 0 14px 28px rgba(79, 70, 229, 0.32);
-    }
-
-    .stTabs [data-baseweb="tab-list"] {
-        gap: 10px;
-    }
-
-    .stTabs [data-baseweb="tab"] {
-        background: rgba(255, 255, 255, 0.85);
-        border-radius: 14px 14px 0 0;
-        padding: 12px 18px;
-        font-weight: 700;
-        color: #334155;
-    }
-
-    .stTabs [aria-selected="true"] {
-        background: linear-gradient(90deg, #dbeafe 0%, #ede9fe 100%) !important;
-        color: #312e81 !important;
-    }
-
-    h1, h2, h3 {
-        color: #172554;
-    }
-
-    .nav-pill {
-        display: inline-block;
-        padding: 8px 14px;
-        background: rgba(255,255,255,0.18);
-        border: 1px solid rgba(255,255,255,0.24);
-        border-radius: 999px;
-        margin-right: 8px;
-        margin-top: 12px;
-        font-size: 0.9rem;
-        color: #eef2ff;
-    }
-
+    /* Feature grid */
     .feature-grid {
         display: grid;
         grid-template-columns: repeat(3, minmax(0, 1fr));
-        gap: 16px;
-        margin: 18px 0 8px 0;
+        gap: 18px;
+        margin: 20px 0 10px 0;
     }
 
     .feature-card {
-        background: rgba(255, 255, 255, 0.92);
-        border: 1px solid rgba(99, 102, 241, 0.16);
-        border-radius: 20px;
-        padding: 22px;
-        box-shadow: 0 12px 28px rgba(15, 23, 42, 0.08);
-        min-height: 165px;
+        background: rgba(255,255,255,0.90);
+        border: 1px solid rgba(99,102,241,0.15);
+        border-radius: 24px;
+        padding: 24px;
+        box-shadow: 0 14px 32px rgba(15,23,42,0.07);
+        min-height: 150px;
+        transition: all 0.22s ease;
+        position: relative;
+        overflow: hidden;
     }
 
-    .feature-icon { font-size: 2rem; margin-bottom: 8px; }
-    .feature-title { color: #172554; font-weight: 800; font-size: 1.1rem; margin-bottom: 8px; }
-    .feature-text { color: #475569; line-height: 1.55; font-size: 0.95rem; }
+    .feature-card:before {
+        content: "";
+        position: absolute;
+        inset: 0 0 auto 0;
+        height: 5px;
+        background: linear-gradient(90deg, #2563eb, #7c3aed, #db2777);
+    }
+
+    .feature-card:hover {
+        transform: translateY(-5px);
+        box-shadow: 0 24px 48px rgba(79,70,229,0.15);
+    }
+
+    .feature-title {
+        color: #172554;
+        font-weight: 900;
+        font-size: 1.08rem;
+        margin-bottom: 8px;
+        letter-spacing: -0.02em;
+    }
+
+    .feature-text {
+        color: #475569;
+        line-height: 1.6;
+        font-size: 0.95rem;
+    }
 
     .workflow-step {
         background: linear-gradient(90deg, #ffffff 0%, #eef2ff 100%);
         border-left: 5px solid #4f46e5;
-        border-radius: 16px;
-        padding: 14px 18px;
-        margin: 10px 0;
-        box-shadow: 0 8px 20px rgba(15, 23, 42, 0.06);
+        border-radius: 18px;
+        padding: 15px 18px;
+        margin: 11px 0;
+        box-shadow: 0 10px 24px rgba(15,23,42,0.055);
         color: #334155;
     }
 
     .badge-soft {
         display: inline-block;
-        padding: 6px 10px;
+        padding: 7px 11px;
         border-radius: 999px;
-        background: #dbeafe;
+        background: linear-gradient(90deg, #dbeafe, #ede9fe);
         color: #1e40af;
-        font-weight: 700;
+        font-weight: 850;
         font-size: 0.82rem;
         margin: 4px 6px 4px 0;
+        border: 1px solid rgba(37,99,235,0.12);
     }
 
-    .home-cta {
-        background: linear-gradient(120deg, #eff6ff 0%, #f5f3ff 100%);
-        border: 1px solid rgba(99, 102, 241, 0.22);
+    /* Metrics */
+    div[data-testid="stMetric"] {
+        background: rgba(255,255,255,0.92);
+        border: 1px solid rgba(99,102,241,0.16);
         border-radius: 22px;
-        padding: 24px;
-        margin-top: 18px;
+        padding: 20px;
+        box-shadow: 0 16px 34px rgba(30,41,59,0.08);
+    }
+
+    div[data-testid="stMetricLabel"] {
+        font-weight: 800;
+        color: #475569;
+    }
+
+    div[data-testid="stMetricValue"] {
+        color: #312e81;
+        font-weight: 950;
+    }
+
+    /* Buttons */
+    .stButton > button {
+        background: linear-gradient(90deg, #2563eb 0%, #7c3aed 62%, #db2777 100%);
+        color: white;
+        border: none;
+        border-radius: 16px;
+        padding: 0.72rem 1.25rem;
+        font-weight: 900;
+        box-shadow: 0 12px 24px rgba(79,70,229,0.25);
+        transition: all 0.18s ease;
+    }
+
+    .stButton > button:hover {
+        transform: translateY(-2px);
+        box-shadow: 0 18px 34px rgba(79,70,229,0.32);
+        color: white;
+    }
+
+    /* Result section buttons */
+    .result-tabs-shell {
+        background: rgba(255,255,255,0.72);
+        border: 1px solid rgba(148,163,184,0.24);
+        border-radius: 24px;
+        padding: 14px;
+        margin: 20px 0 18px 0;
+        box-shadow: 0 16px 34px rgba(15,23,42,0.07);
+        backdrop-filter: blur(12px);
+    }
+
+    .tab-active-label {
+        background: linear-gradient(90deg, #dbeafe 0%, #ede9fe 55%, #fce7f3 100%);
+        border: 1px solid rgba(124,58,237,0.22);
+        color: #1e1b4b;
+        border-radius: 18px;
+        padding: 12px 14px;
+        font-weight: 950;
+        text-align: center;
+        box-shadow: 0 12px 26px rgba(79,70,229,0.12);
+        margin-bottom: 10px;
+    }
+
+    /* Functional badges */
+    .func-badge {
+        display: inline-block;
+        padding: 5px 9px;
+        border-radius: 999px;
+        font-size: 0.78rem;
+        font-weight: 800;
+        margin: 3px 4px 3px 0;
+        border: 1px solid rgba(15,23,42,0.08);
+    }
+    .func-domain { background: #dbeafe; color: #1e40af; }
+    .func-binding { background: #dcfce7; color: #166534; }
+    .func-glyco { background: #fef3c7; color: #92400e; }
+    .func-site { background: #fee2e2; color: #991b1b; }
+    .func-region { background: #ede9fe; color: #5b21b6; }
+    .func-transmembrane { background: #cffafe; color: #155e75; }
+    .func-disulfide { background: #fce7f3; color: #9d174d; }
+    .func-other { background: #e2e8f0; color: #334155; }
+
+    /* Dataframes */
+    [data-testid="stDataFrame"] {
+        border-radius: 18px;
+        overflow: hidden;
+        box-shadow: 0 10px 24px rgba(15,23,42,0.05);
+    }
+
+    code {
+        border-radius: 14px !important;
     }
 
     @media (max-width: 900px) {
         .feature-grid { grid-template-columns: 1fr; }
-        .hero-title { font-size: 1.8rem; }
+        .fun-hero-title { font-size: 2rem; }
+        .fun-hero-card { padding: 28px 26px; }
     }
 
-
-    /* Professional top navigation and result selectors */
-    div[role="radiogroup"] {
-        background: rgba(255, 255, 255, 0.86);
-        border: 1px solid rgba(148, 163, 184, 0.28);
-        border-radius: 18px;
-        padding: 8px;
-        box-shadow: 0 10px 24px rgba(15, 23, 42, 0.06);
-        margin-bottom: 18px;
+    .candidate-card {
+        background: linear-gradient(135deg, rgba(255,255,255,0.96), rgba(239,246,255,0.86));
+        border: 1px solid rgba(99,102,241,0.18);
+        border-radius: 22px;
+        padding: 18px 20px;
+        margin: 12px 0;
+        box-shadow: 0 14px 30px rgba(15,23,42,0.07);
     }
-
-    div[role="radiogroup"] label {
-        background: transparent !important;
-        border-radius: 12px !important;
-        padding: 8px 14px !important;
-        color: #334155 !important;
-        font-weight: 700 !important;
+    .candidate-title {
+        color: #172554;
+        font-weight: 950;
+        font-size: 1.02rem;
+        margin-bottom: 8px;
+        letter-spacing: -0.02em;
     }
-
-    div[role="radiogroup"] label:has(input:checked) {
-        background: linear-gradient(90deg, #dbeafe 0%, #ede9fe 100%) !important;
-        color: #1e1b4b !important;
-        border: 1px solid rgba(79, 70, 229, 0.20) !important;
+    .candidate-meta {
+        color: #475569;
+        font-size: 0.9rem;
+        margin-bottom: 8px;
     }
-
-    [data-testid="stSidebar"] {
-        border-right: 1px solid rgba(226, 232, 240, 0.35);
+    .empty-note {
+        background: #f8fafc;
+        color: #64748b;
+        padding: 9px 12px;
+        border-radius: 12px;
+        border: 1px dashed rgba(100,116,139,0.35);
+        font-size: 0.9rem;
     }
-
-    .feature-card {
-        min-height: 135px;
+    .viz-caption {
+        color: #64748b;
+        font-size: 0.92rem;
+        margin-top: -4px;
+        margin-bottom: 12px;
     }
-
-
-
-    /* Fun website-style navigation */
-    .website-nav {
-        background: rgba(255, 255, 255, 0.86);
-        border: 1px solid rgba(129, 140, 248, 0.25);
-        border-radius: 999px;
-        padding: 10px 14px;
-        margin: -4px 0 22px 0;
-        box-shadow: 0 14px 32px rgba(79, 70, 229, 0.10);
-        backdrop-filter: blur(10px);
-    }
-    .website-nav-title { font-weight: 900; color: #312e81; padding-top: 8px; font-size: 1.05rem; letter-spacing: -0.02em; }
-    .top-nav-active { background: linear-gradient(90deg, #ecfeff 0%, #eef2ff 50%, #f5d0fe 100%); border: 1px solid rgba(124, 58, 237, 0.25); color: #312e81; border-radius: 999px; padding: 10px 18px; font-weight: 900; text-align: center; box-shadow: 0 8px 18px rgba(124, 58, 237, 0.12); margin-bottom: 18px; }
-    .fun-hero-card { background: radial-gradient(circle at top left, rgba(34, 211, 238, 0.45), transparent 32%), radial-gradient(circle at bottom right, rgba(244, 114, 182, 0.38), transparent 34%), linear-gradient(120deg, #1e3a8a 0%, #4f46e5 45%, #9333ea 100%); border-radius: 30px; padding: 38px 42px; margin-bottom: 22px; box-shadow: 0 24px 60px rgba(49, 46, 129, 0.24); color: white; position: relative; overflow: hidden; }
-    .fun-hero-title { font-size: 2.55rem; font-weight: 950; margin-bottom: 10px; letter-spacing: -0.04em; }
-    .fun-hero-subtitle { font-size: 1.08rem; line-height: 1.75; color: #eef2ff; max-width: 980px; }
-    .fun-chip { display: inline-block; padding: 8px 13px; background: rgba(255,255,255,0.18); border: 1px solid rgba(255,255,255,0.28); border-radius: 999px; margin-right: 8px; margin-top: 16px; font-size: 0.88rem; color: #ffffff; font-weight: 750; }
-    .result-tabs-shell { background: rgba(255,255,255,0.72); border: 1px solid rgba(148, 163, 184, 0.25); border-radius: 22px; padding: 12px; margin: 20px 0 18px 0; box-shadow: 0 14px 30px rgba(15,23,42,0.07); }
-    .tab-active-label { background: linear-gradient(90deg, #dbeafe 0%, #ede9fe 55%, #fce7f3 100%); border: 1px solid rgba(124, 58, 237, 0.25); color: #1e1b4b; border-radius: 16px; padding: 12px 14px; font-weight: 900; text-align: center; box-shadow: 0 10px 22px rgba(79,70,229,0.12); margin-bottom: 8px; }
-    .section-card { background: rgba(255, 255, 255, 0.92); border: 1px solid rgba(129, 140, 248, 0.24); border-radius: 24px; padding: 24px 26px; box-shadow: 0 16px 34px rgba(15, 23, 42, 0.09); margin-bottom: 20px; }
-    .feature-card:hover { transform: translateY(-3px); transition: 0.2s ease; box-shadow: 0 18px 36px rgba(79, 70, 229, 0.13); }
 
 </style>
 """, unsafe_allow_html=True)
 
 st.markdown("""
 <div class="fun-hero-card">
-    <div class="fun-hero-title">Vaccine Target Prioritization Lab</div>
+    <div class="fun-hero-title">VaxRegion Lab</div>
     <div class="fun-hero-subtitle">
-        Explore viral protein regions with an interactive bioinformatics workflow combining conservation,
-        epitope evidence, functional annotation, 3D structure mapping, and machine learning.
+        An interactive bioinformatics research dashboard for discovering promising vaccine target regions.
+        It combines evolutionary conservation, epitope evidence, UniProt functional annotation, PDB structure mapping,
+        amino-acid composition, PubMed evidence, and AI-assisted literature synthesis.
     </div>
-    <span class="fun-chip">Conservation</span>
-    <span class="fun-chip">Epitopes</span>
-    <span class="fun-chip">Structure</span>
-    <span class="fun-chip">Machine Learning</span>
+    <span class="fun-chip">Evolutionary Conservation</span>
+    <span class="fun-chip">Epitope Evidence</span>
+    <span class="fun-chip">Weighted Functional Regions</span>
+    <span class="fun-chip">3D Structure Mapping</span>
+    <span class="fun-chip">AI Literature Summary</span>
 </div>
 """, unsafe_allow_html=True)
+
+
+def get_database_defaults(virus_name, protein_name):
+    """Return suggested UniProt accession, PDB ID, and chain for common virus/protein combinations."""
+    key = f"{virus_name} {protein_name}".lower()
+
+    presets = [
+        {
+            "match": ["sars", "cov", "spike"],
+            "uniprot": "P0DTC2",
+            "pdb": "6VSB",
+            "chain": "A",
+            "label": "SARS-CoV-2 Spike glycoprotein"
+        },
+        {
+            "match": ["hiv", "gp120"],
+            "uniprot": "P04578",
+            "pdb": "6MEO",
+            "chain": "G",
+            "label": "HIV-1 envelope glycoprotein gp120"
+        },
+        {
+            "match": ["influenza", "hemagglutinin"],
+            "uniprot": "P03437",
+            "pdb": "1RU7",
+            "chain": "A",
+            "label": "Influenza A hemagglutinin"
+        },
+        {
+            "match": ["influenza", "ha"],
+            "uniprot": "P03437",
+            "pdb": "1RU7",
+            "chain": "A",
+            "label": "Influenza A hemagglutinin"
+        },
+        {
+            "match": ["hepatitis", "b", "surface"],
+            "uniprot": "P03138",
+            "pdb": "",
+            "chain": "A",
+            "label": "Hepatitis B surface antigen"
+        },
+        {
+            "match": ["dengue", "envelope"],
+            "uniprot": "P29990",
+            "pdb": "1OKE",
+            "chain": "A",
+            "label": "Dengue virus envelope protein"
+        },
+        {
+            "match": ["zika", "envelope"],
+            "uniprot": "A0A024B7W1",
+            "pdb": "5IRE",
+            "chain": "A",
+            "label": "Zika virus envelope protein"
+        },
+    ]
+
+    for preset in presets:
+        if all(term in key for term in preset["match"]):
+            return preset
+
+    return {
+        "uniprot": "",
+        "pdb": "",
+        "chain": "A",
+        "label": "No automatic match found"
+    }
 
 # top nav and sidebar inputs
 if "current_page" not in st.session_state:
     st.session_state["current_page"] = "Home"
 
 st.markdown('<div class="website-nav">', unsafe_allow_html=True)
-nav_cols = st.columns([1.5, 1, 1, 1])
+nav_cols = st.columns([1.5, 1, 1, 1, 1])
 with nav_cols[0]:
-    st.markdown('<div class="website-nav-title">VaxTarget Lab</div>', unsafe_allow_html=True)
+    st.markdown('<div class="website-nav-title">VaxRegion Lab</div>', unsafe_allow_html=True)
 with nav_cols[1]:
     if st.button("Home", key="nav_home", use_container_width=True):
         st.session_state["current_page"] = "Home"
@@ -319,9 +530,13 @@ with nav_cols[2]:
 with nav_cols[3]:
     if st.button("Methodology", key="nav_methodology", use_container_width=True):
         st.session_state["current_page"] = "Methodology"
+with nav_cols[4]:
+    if st.button("Disease Explorer", key="nav_disease", use_container_width=True):
+        st.session_state["current_page"] = "Disease Explorer"
+
 st.markdown('</div>', unsafe_allow_html=True)
 
-st.markdown(f'<div class="top-nav-active">Current page: {st.session_state["current_page"]}</div>', unsafe_allow_html=True)
+st.markdown(f'<div class="top-nav-active">{st.session_state["current_page"]}</div>', unsafe_allow_html=True)
 page = st.session_state["current_page"]
 
 st.sidebar.header("Analysis Settings")
@@ -341,15 +556,54 @@ conserved_threshold = st.sidebar.slider("Conserved threshold", 0.0, 1.0, 0.9)
 
 coef_cons = st.sidebar.slider("Conservation weight", 0.0, 3.0, 1.0)
 coef_epitope = st.sidebar.slider("Epitope weight", 0.0, 3.0, 0.5)
+coef_functional = st.sidebar.slider("Functional region weight", 0.0, 3.0, 0.5)
 coef_hotspot = st.sidebar.slider("Hotspot penalty weight", 0.0, 3.0, 0.5)
 
 high_score = st.sidebar.slider("High priority threshold", 0.0, 3.0, 1.4)
 medium_score = st.sidebar.slider("Medium priority threshold", 0.0, 3.0, 1.0)
 
-st.sidebar.header("Optional Annotation Inputs")
-uniprot_accession = st.sidebar.text_input("UniProt accession, optional", "P0DTC2")
-pdb_id = st.sidebar.text_input("PDB ID, optional", "6VSB")
-pdb_chain = st.sidebar.text_input("PDB chain, optional", "A")
+
+st.sidebar.header("Database Mapping")
+
+db_defaults = get_database_defaults(virus, protein)
+
+st.sidebar.caption(f"Suggested mapping: {db_defaults['label']}")
+
+use_manual_mapping = st.sidebar.checkbox(
+    "Manually edit UniProt/PDB IDs",
+    value=False
+)
+
+if use_manual_mapping:
+    uniprot_accession = st.sidebar.text_input(
+        "UniProt accession",
+        value=db_defaults["uniprot"] or "P0DTC2",
+        key="manual_uniprot_accession"
+    )
+    pdb_id = st.sidebar.text_input(
+        "PDB ID",
+        value=db_defaults["pdb"] or "6VSB",
+        key="manual_pdb_id"
+    )
+    pdb_chain = st.sidebar.text_input(
+        "PDB chain",
+        value=db_defaults["chain"] or "A",
+        key="manual_pdb_chain"
+    )
+else:
+    uniprot_accession = db_defaults["uniprot"]
+    pdb_id = db_defaults["pdb"]
+    pdb_chain = db_defaults["chain"]
+
+    col_db1, col_db2, col_db3 = st.sidebar.columns(3)
+    col_db1.metric("UniProt", uniprot_accession if uniprot_accession else "N/A")
+    col_db2.metric("PDB", pdb_id if pdb_id else "N/A")
+    col_db3.metric("Chain", pdb_chain if pdb_chain else "N/A")
+
+    if not uniprot_accession:
+        st.sidebar.warning("No automatic UniProt accession found. Enable manual edit and enter one.")
+    if not pdb_id:
+        st.sidebar.info("No automatic PDB ID found. 3D mapping needs a PDB ID.")
 
 # manual epitope input
 st.sidebar.header("Epitope Regions")
@@ -364,6 +618,43 @@ B,910,988
 T,1130,1160"""
 epitope_text = st.sidebar.text_area("Known epitopes", default_epitopes, height=180)
 
+st.sidebar.header("Run Behavior")
+auto_run_on_change = st.sidebar.checkbox("Auto-run analysis when settings change", value=True)
+st.sidebar.caption("Turn off if runs become slow because of NCBI, MUSCLE, or ConSurf.")
+if st.sidebar.button("Clear cached data / reset results"):
+    st.cache_data.clear()
+    st.session_state["analysis_done"] = False
+    st.session_state["last_run_signature"] = None
+    st.rerun()
+
+
+# Track sidebar settings so changing virus/protein/coefs triggers fresh results
+current_settings = {
+    "virus": virus,
+    "protein": protein,
+    "email": email,
+    "max_seqs": max_seqs,
+    "min_length": min_length,
+    "window_size": window_size,
+    "window_step": window_step,
+    "hotspot_threshold": hotspot_threshold,
+    "conserved_threshold": conserved_threshold,
+    "coef_cons": coef_cons,
+    "coef_epitope": coef_epitope,
+    "coef_functional": coef_functional,
+    "coef_hotspot": coef_hotspot,
+    "high_score": high_score,
+    "medium_score": medium_score,
+    "uniprot_accession": uniprot_accession,
+    "pdb_id": pdb_id,
+    "pdb_chain": pdb_chain,
+    "use_manual_mapping": use_manual_mapping,
+    "epitope_text": epitope_text,
+}
+current_settings_signature = repr(sorted(current_settings.items()))
+last_run_signature = st.session_state.get("last_run_signature")
+settings_changed = current_settings_signature != last_run_signature
+
 # helper functions
 def parse_epitopes(text):
     epitopes = []
@@ -376,6 +667,14 @@ def parse_epitopes(text):
             except ValueError:
                 pass
     return epitopes
+
+
+def safe_file_slug(*parts):
+    """Create a safe filename slug so sequence/alignment files are unique per run."""
+    text = "_".join(str(p) for p in parts)
+    text = re.sub(r"[^A-Za-z0-9_.-]+", "_", text)
+    return text.strip("_")[:120] or "analysis"
+
 
 @st.cache_data(show_spinner=False)
 def fetch_sequences(virus, protein, email, max_seqs, min_length):
@@ -395,8 +694,9 @@ def fetch_sequences(virus, protein, email, max_seqs, min_length):
     fasta_data = handle.read()
     handle.close()
 
-    raw_path = "sequences_raw.fasta"
-    clean_path = "sequences.fasta"
+    file_slug = safe_file_slug(virus, protein, max_seqs, min_length)
+    raw_path = f"sequences_raw_{file_slug}.fasta"
+    clean_path = f"sequences_{file_slug}.fasta"
 
     with open(raw_path, "w") as f:
         f.write(fasta_data)
@@ -415,9 +715,8 @@ def fetch_sequences(virus, protein, email, max_seqs, min_length):
     return clean_path, len(ids), len(filtered)
 
 
-@st.cache_data(show_spinner=False)
 def run_muscle(input_fasta):
-    aligned_fasta = "aligned.fasta"
+    aligned_fasta = f"aligned_{safe_file_slug(input_fasta)}.fasta"
 
     # this assumes MUSCLE is installed locally
     # Mac: conda install -c bioconda muscle
@@ -571,14 +870,164 @@ def build_epitope_map(epitopes, aln_len):
     return epitope_map
 
 
+
+
+def classify_functional_feature(feature_type, description=""):
+    """Classify UniProt feature into interpretable functional categories."""
+    text = f"{feature_type} {description}".lower()
+
+    if "glycosyl" in text or "glycan" in text:
+        return "Glycosylation"
+    if "binding" in text or "receptor" in text or "interaction" in text:
+        return "Binding site"
+    if "active site" in text or "site" in text:
+        return "Functional site"
+    if "domain" in text:
+        return "Domain"
+    if "transmembrane" in text or "topological" in text:
+        return "Membrane/topology"
+    if "disulfide" in text:
+        return "Disulfide bond"
+    if "motif" in text:
+        return "Motif"
+    if "region" in text:
+        return "Region"
+    return "Other"
+
+
+def functional_feature_weight(category):
+    """Assign biological importance weights to functional feature categories."""
+    weights = {
+        "Binding site": 1.00,
+        "Functional site": 0.95,
+        "Glycosylation": 0.85,
+        "Domain": 0.80,
+        "Motif": 0.75,
+        "Region": 0.65,
+        "Membrane/topology": 0.55,
+        "Disulfide bond": 0.50,
+        "Other": 0.35,
+    }
+    return weights.get(category, 0.35)
+
+
+def functional_category_class(category):
+    """CSS class for visual color coding."""
+    mapping = {
+        "Domain": "func-domain",
+        "Binding site": "func-binding",
+        "Glycosylation": "func-glyco",
+        "Functional site": "func-site",
+        "Region": "func-region",
+        "Motif": "func-region",
+        "Membrane/topology": "func-transmembrane",
+        "Disulfide bond": "func-disulfide",
+        "Other": "func-other",
+    }
+    return mapping.get(category, "func-other")
+
+
+def build_functional_map(features_df, aln_len):
+    """Create a weighted functional map from UniProt annotations."""
+    functional_map = [0.0] * aln_len
+
+    if features_df is None or features_df.empty:
+        return functional_map
+
+    for _, feat in features_df.iterrows():
+        if pd.isna(feat.get("start")) or pd.isna(feat.get("end")):
+            continue
+
+        try:
+            start = int(feat["start"])
+            end = int(feat["end"])
+        except Exception:
+            continue
+
+        category = classify_functional_feature(feat.get("type", ""), feat.get("description", ""))
+        weight = functional_feature_weight(category)
+
+        # UniProt positions are usually 1-based; windows are 0-based.
+        start0 = max(start - 1, 0)
+        end0 = min(end, aln_len)
+
+        for pos in range(start0, end0):
+            functional_map[pos] = max(functional_map[pos], weight)
+
+    return functional_map
+
+
+def add_functional_notes(final_candidates, features_df):
+    """Add color-coded and plain functional notes without creating a binary overlap feature."""
+    if features_df is None or features_df.empty:
+        final_candidates["functional_notes"] = ""
+        return final_candidates
+
+    plain_notes = []
+    html_notes = []
+
+    for _, row in final_candidates.iterrows():
+        start = int(row["start"])
+        end = int(row["end"])
+
+        notes = []
+        html = []
+
+        for _, feat in features_df.iterrows():
+            if pd.isna(feat.get("start")) or pd.isna(feat.get("end")):
+                continue
+
+            try:
+                fs = int(feat["start"])
+                fe = int(feat["end"])
+            except Exception:
+                continue
+
+            if start <= fe and end >= fs:
+                ftype = str(feat.get("type", "Feature"))
+                desc = str(feat.get("description", "")).strip()
+                category = classify_functional_feature(ftype, desc)
+                css_class = functional_category_class(category)
+                label = f"{category}: {desc if desc else ftype}"
+                notes.append(label)
+                html.append(f'<span class="func-badge {css_class}">{label}</span>')
+
+        plain_notes.append("; ".join(notes[:5]))
+
+    final_candidates["functional_notes"] = plain_notes
+    return final_candidates
+
+
+def summarize_functional_feature_types(features_df):
+    """Return a summary table of UniProt feature categories and scoring weights."""
+    if features_df is None or features_df.empty:
+        return pd.DataFrame()
+
+    rows = []
+    for _, feat in features_df.iterrows():
+        category = classify_functional_feature(feat.get("type", ""), feat.get("description", ""))
+        rows.append({
+            "Feature type": feat.get("type", ""),
+            "Category": category,
+            "Weight used in scoring": functional_feature_weight(category),
+            "Start": feat.get("start", ""),
+            "End": feat.get("end", ""),
+            "Description": feat.get("description", "")
+        })
+
+    return pd.DataFrame(rows)
+
+
 def score_windows(
     conservation_scores,
     epitope_map,
+    functional_map,
     window_size,
     window_step,
     hotspot_threshold,
     coef_cons,
     coef_epitope,
+    coef_functional,
     coef_hotspot
 ):
     aln_len = len(conservation_scores)
@@ -589,10 +1038,13 @@ def score_windows(
 
         conservation_slice = conservation_scores[start:end]
         epitope_slice = epitope_map[start:end]
+        functional_slice = functional_map[start:end] if functional_map else [0] * window_size
 
         avg_conservation = conservation_slice.mean()
         epitope_count = sum(1 for e in epitope_slice if e != "")
         epitope_fraction = epitope_count / window_size
+
+        functional_fraction = sum(float(value) for value in functional_slice) / window_size
 
         hotspot_count = sum(1 for score in conservation_slice if score < hotspot_threshold)
         hotspot_fraction = hotspot_count / window_size
@@ -600,6 +1052,7 @@ def score_windows(
         score = (
             avg_conservation * coef_cons
             + epitope_fraction * coef_epitope
+            + functional_fraction * coef_functional
             - hotspot_fraction * coef_hotspot
         )
 
@@ -608,6 +1061,7 @@ def score_windows(
             "end": end,
             "avg_conservation": round(avg_conservation, 4),
             "epitope_fraction": round(epitope_fraction, 4),
+            "functional_fraction": round(functional_fraction, 4),
             "hotspot_fraction": round(hotspot_fraction, 4),
             "score": round(score, 4),
         })
@@ -675,6 +1129,153 @@ def plot_candidates(conservation_scores, final_candidates, top_n=10):
     return fig
 
 
+
+def plot_functional_regions(conservation_scores, final_candidates, features_df, conserved_threshold, hotspot_threshold, top_n=10):
+    """Plot conservation with functional annotations and top candidate regions."""
+    fig, ax = plt.subplots(figsize=(14, 4))
+    ax.plot(conservation_scores, linewidth=1.2, color="#2563eb", label="Conservation score")
+    ax.fill_between(range(len(conservation_scores)), conservation_scores, alpha=0.10, color="#2563eb")
+    ax.axhline(y=conserved_threshold, linestyle="--", linewidth=1.1, color="#16a34a", label="Conserved threshold")
+    ax.axhline(y=hotspot_threshold, linestyle="--", linewidth=1.1, color="#dc2626", label="Hotspot threshold")
+    ax.grid(alpha=0.18)
+
+    color_map = {
+        "Domain": "#60a5fa",
+        "Binding site": "#22c55e",
+        "Glycosylation": "#f59e0b",
+        "Functional site": "#ef4444",
+        "Region": "#a78bfa",
+        "Motif": "#c084fc",
+        "Membrane/topology": "#06b6d4",
+        "Disulfide bond": "#ec4899",
+        "Other": "#94a3b8",
+    }
+
+    used_labels = set()
+
+    if features_df is not None and not features_df.empty:
+        for _, feat in features_df.iterrows():
+            if pd.isna(feat.get("start")) or pd.isna(feat.get("end")):
+                continue
+            try:
+                fs = int(feat["start"]) - 1
+                fe = int(feat["end"])
+            except Exception:
+                continue
+
+            category = classify_functional_feature(feat.get("type", ""), feat.get("description", ""))
+            color = color_map.get(category, "#94a3b8")
+            label = category if category not in used_labels else None
+            ax.axvspan(fs, fe, color=color, alpha=0.16, label=label)
+            used_labels.add(category)
+
+    for _, row in final_candidates.head(top_n).iterrows():
+        start = int(row["start"])
+        end = int(row["end"])
+        rank = int(row["rank"])
+        ax.axvspan(start, end, color="#f97316", alpha=0.26)
+        ax.text((start + end) / 2, 0.32, str(rank), ha="center", fontsize=8, color="#7c2d12", fontweight="bold")
+
+    ax.set_xlabel("Alignment position")
+    ax.set_ylabel("Conservation score")
+    ax.set_title("Functional Regions + Top Candidate Vaccine Regions")
+    ax.legend(loc="center left", bbox_to_anchor=(1, 0.5), fontsize=8)
+    fig.tight_layout()
+    return fig
+
+
+
+def plot_candidate_score_breakdown(final_candidates, top_n=15):
+    """Horizontal bar chart for top candidate scores."""
+    top = final_candidates.head(top_n).copy()
+    if top.empty:
+        fig, ax = plt.subplots(figsize=(10, 3))
+        ax.text(0.5, 0.5, "No candidates available", ha="center", va="center")
+        ax.axis("off")
+        return fig
+
+    labels = [f"Rank {int(r)} ({int(s)}-{int(e)})" for r, s, e in zip(top["rank"], top["start"], top["end"])]
+
+    fig, ax = plt.subplots(figsize=(11, max(4, 0.42 * len(top))))
+    y = np.arange(len(top))
+
+    ax.barh(y, top["score"])
+    ax.set_yticks(y)
+    ax.set_yticklabels(labels)
+    ax.invert_yaxis()
+    ax.set_xlabel("Candidate score")
+    ax.set_title("Top Candidate Score Ranking")
+    ax.grid(axis="x", alpha=0.2)
+
+    for i, val in enumerate(top["score"]):
+        ax.text(val + 0.01, i, f"{val:.2f}", va="center", fontsize=8)
+
+    fig.tight_layout()
+    return fig
+
+
+def plot_candidate_feature_fractions(final_candidates, top_n=12):
+    """Stacked bar chart showing conservation/epitope/functional/hotspot components."""
+    top = final_candidates.head(top_n).copy()
+    if top.empty:
+        fig, ax = plt.subplots(figsize=(10, 3))
+        ax.text(0.5, 0.5, "No candidates available", ha="center", va="center")
+        ax.axis("off")
+        return fig
+
+    labels = [f"R{int(r)}" for r in top["rank"]]
+    x = np.arange(len(top))
+
+    conservation = top["avg_conservation"].astype(float)
+    epitope = top["epitope_fraction"].astype(float)
+    functional = top["functional_fraction"].astype(float) if "functional_fraction" in top.columns else np.zeros(len(top))
+    hotspot = top["hotspot_fraction"].astype(float)
+
+    fig, ax = plt.subplots(figsize=(12, 4.5))
+    ax.bar(x, conservation, label="Conservation")
+    ax.bar(x, epitope, bottom=conservation, label="Epitope fraction")
+    ax.bar(x, functional, bottom=conservation + epitope, label="Functional fraction")
+    ax.bar(x, -hotspot, label="Hotspot penalty")
+
+    ax.axhline(0, linewidth=0.8)
+    ax.set_xticks(x)
+    ax.set_xticklabels(labels)
+    ax.set_ylabel("Feature contribution scale")
+    ax.set_title("Candidate Evidence Profile")
+    ax.legend(loc="upper right", fontsize=8)
+    ax.grid(axis="y", alpha=0.18)
+    fig.tight_layout()
+    return fig
+
+
+def plot_region_composition_pie(property_df):
+    """Pie chart for biochemical material profile."""
+    if property_df is None or property_df.empty:
+        fig, ax = plt.subplots(figsize=(5, 4))
+        ax.text(0.5, 0.5, "No composition data", ha="center", va="center")
+        ax.axis("off")
+        return fig
+
+    filtered = property_df[property_df["Residue count"] > 0].copy()
+    if filtered.empty:
+        fig, ax = plt.subplots(figsize=(5, 4))
+        ax.text(0.5, 0.5, "No composition data", ha="center", va="center")
+        ax.axis("off")
+        return fig
+
+    fig, ax = plt.subplots(figsize=(5.5, 4.5))
+    ax.pie(
+        filtered["Residue count"],
+        labels=filtered["Property"],
+        autopct="%1.0f%%",
+        startangle=90,
+        textprops={"fontsize": 8}
+    )
+    ax.set_title("Selected Region Composition")
+    fig.tight_layout()
+    return fig
+
+
 def fetch_uniprot_features(accession):
     if not accession:
         return pd.DataFrame()
@@ -695,6 +1296,7 @@ def fetch_uniprot_features(accession):
         end = location.get("end", {}).get("value")
 
         rows.append({
+            "source_accession": accession,
             "type": f.get("type"),
             "description": f.get("description", ""),
             "start": start,
@@ -703,86 +1305,6 @@ def fetch_uniprot_features(accession):
 
     return pd.DataFrame(rows)
 
-
-def add_functional_overlap(final_candidates, features_df):
-    if features_df.empty:
-        final_candidates["functional_overlap"] = 0
-        final_candidates["functional_notes"] = ""
-        return final_candidates
-
-    overlaps = []
-    notes = []
-
-    for _, row in final_candidates.iterrows():
-        start = int(row["start"])
-        end = int(row["end"])
-
-        overlapping_features = []
-        for _, feat in features_df.iterrows():
-            if pd.notna(feat["start"]) and pd.notna(feat["end"]):
-                fs = int(feat["start"])
-                fe = int(feat["end"])
-
-                if start <= fe and end >= fs:
-                    overlapping_features.append(f"{feat['type']}: {feat['description']}")
-
-        overlaps.append(1 if overlapping_features else 0)
-        notes.append("; ".join(overlapping_features[:3]))
-
-    final_candidates["functional_overlap"] = overlaps
-    final_candidates["functional_notes"] = notes
-    return final_candidates
-
-
-def train_ml_classifier(windows_df, high_score, medium_score):
-    
-    ml_df = windows_df.copy()
-    ml_df["priority"] = ml_df["score"].apply(lambda x: assign_priority(x, high_score, medium_score))
-
-    X = ml_df[[
-        "avg_conservation",
-        "epitope_fraction",
-        "hotspot_fraction"
-    ]]
-
-    y = ml_df["priority"]
-
-    le = LabelEncoder()
-    y_encoded = le.fit_transform(y)
-
-    if len(set(y_encoded)) < 2:
-        return None, None, None, "Not enough class variation to train ML model."
-
-    X_train, X_test, y_train, y_test = train_test_split(
-        X,
-        y_encoded,
-        test_size=0.25,
-        random_state=42,
-        stratify=y_encoded
-    )
-
-    model = RandomForestClassifier(
-        n_estimators=150,
-        random_state=42,
-        class_weight="balanced"
-    )
-
-    model.fit(X_train, y_train)
-    pred = model.predict(X_test)
-
-    report = classification_report(
-        y_test,
-        pred,
-        target_names=le.classes_,
-        zero_division=0
-    )
-
-    importances = pd.DataFrame({
-        "feature": X.columns,
-        "importance": model.feature_importances_
-    }).sort_values("importance", ascending=False)
-
-    return model, le, importances, report
 
 
 AA3_TO_1 = {
@@ -896,6 +1418,54 @@ def map_alignment_region_to_pdb_residues(ref_aligned_sequence, region_start, reg
     return mapped_residues, unmapped_alignment_positions
 
 
+
+def extract_region_sequence_from_alignment(ref_aligned_sequence, region_start, region_end):
+    """Extract the selected candidate region from the reference aligned sequence."""
+    region = str(ref_aligned_sequence)[int(region_start):int(region_end) + 1]
+    ungapped_region = region.replace("-", "")
+    return region, ungapped_region
+
+
+def summarize_region_composition(sequence):
+    """Summarize amino-acid composition and biochemical material properties."""
+    sequence = sequence.replace("-", "").upper()
+    length = len(sequence)
+
+    if length == 0:
+        return pd.DataFrame(), pd.DataFrame()
+
+    aa_counts = Counter(sequence)
+
+    aa_properties = {
+        "Hydrophobic / nonpolar": set("AILMFWVPG"),
+        "Polar uncharged": set("STNQCY"),
+        "Positively charged": set("KRH"),
+        "Negatively charged": set("DE"),
+        "Special / flexible": set("GP"),
+        "Aromatic": set("FWY"),
+        "Sulfur-containing": set("CM"),
+    }
+
+    property_rows = []
+    for prop, residues in aa_properties.items():
+        count = sum(aa_counts.get(aa, 0) for aa in residues)
+        property_rows.append({
+            "Property": prop,
+            "Residue count": count,
+            "Percentage": round((count / length) * 100, 2)
+        })
+
+    aa_rows = []
+    for aa, count in sorted(aa_counts.items()):
+        aa_rows.append({
+            "Amino acid": aa,
+            "Count": count,
+            "Percentage": round((count / length) * 100, 2)
+        })
+
+    return pd.DataFrame(property_rows), pd.DataFrame(aa_rows)
+
+
 def show_3d_structure(pdb_id, chain, highlight_start, highlight_end, ref_aligned_sequence=None):
     if not HAS_3D:
         st.warning("3D viewer is not installed. Run: pip install py3Dmol stmol")
@@ -957,22 +1527,22 @@ def show_3d_structure(pdb_id, chain, highlight_start, highlight_end, ref_aligned
 # page content helpers
 def show_home_page():
     st.markdown('<div class="section-card">', unsafe_allow_html=True)
-    st.subheader("Welcome")
+    st.subheader("Research Dashboard Overview")
     st.write(
-        "This web app helps identify promising vaccine target regions in viral proteins. "
-        "It starts from protein sequences, aligns them, measures conservation and variability, "
-        "overlays known epitopes, ranks candidate regions, and optionally projects them onto a 3D structure."
+        "VaxRegion Lab helps prioritize viral protein regions that may be useful for vaccine-target investigation. "
+        "The app connects multiple biological evidence layers: sequence conservation, immune epitope overlap, "
+        "functional annotation, structural context, amino-acid composition, and PubMed literature support."
     )
     st.markdown('</div>', unsafe_allow_html=True)
 
     st.markdown("""
     <div class="feature-grid">
-        <div class="feature-card"><div class="feature-title">Sequence Conservation</div><div class="feature-text">Retrieves protein sequences, aligns them using MUSCLE, and computes Shannon entropy-based conservation scores.</div></div>
-        <div class="feature-card"><div class="feature-title">Epitope Evidence</div><div class="feature-text">Overlays B-cell and T-cell epitope regions to prioritize areas with immune relevance.</div></div>
-        <div class="feature-card"><div class="feature-title">Functional Annotation</div><div class="feature-text">Uses UniProt features to check whether candidate regions overlap domains, motifs, binding sites, or functional regions.</div></div>
-        <div class="feature-card"><div class="feature-title">3D Structure Mapping</div><div class="feature-text">Maps candidate sequence regions onto PDB structures and highlights them in an interactive 3D viewer.</div></div>
-        <div class="feature-card"><div class="feature-title">Machine Learning</div><div class="feature-text">Trains a Random Forest classifier to estimate region priority from conservation, epitope overlap, and hotspot fraction.</div></div>
-        <div class="feature-card"><div class="feature-title">Interactive Results</div><div class="feature-text">Displays plots, ranked tables, downloadable CSV files, and candidate-specific structural views.</div></div>
+        <div class="feature-card"><div class="feature-title">Conservation Engine</div><div class="feature-text">Retrieves NCBI protein sequences, aligns them with MUSCLE, and estimates conserved regions using ConSurf when available or Shannon entropy as fallback.</div></div>
+        <div class="feature-card"><div class="feature-title">Immune Evidence Layer</div><div class="feature-text">Integrates B-cell and T-cell epitope intervals so candidate windows are not only conserved, but also immunologically relevant.</div></div>
+        <div class="feature-card"><div class="feature-title">Weighted Functional Scoring</div><div class="feature-text">Converts UniProt domains, binding sites, glycosylation sites, motifs, and topology features into weighted functional fractions.</div></div>
+        <div class="feature-card"><div class="feature-title">Structure-Aware Mapping</div><div class="feature-text">Maps candidate regions from alignment coordinates to PDB residue numbers and highlights them on an interactive 3D protein structure.</div></div>
+        <div class="feature-card"><div class="feature-title">Composition Profile</div><div class="feature-text">Summarizes hydrophobic, polar, charged, aromatic, sulfur-containing, and flexible residues for biological interpretation.</div></div>
+        <div class="feature-card"><div class="feature-title">AI Literature Companion</div><div class="feature-text">Searches PubMed using the selected virus/protein and summarizes vaccine-related findings when an OpenAI API key is configured.</div></div>
     </div>
     """, unsafe_allow_html=True)
 
@@ -980,9 +1550,9 @@ def show_home_page():
     st.subheader("How to use it")
     st.markdown("""
     <div class="workflow-step"><b>1.</b> Open <b>Analysis</b> from the top navigation.</div>
-    <div class="workflow-step"><b>2.</b> Enter the virus/protein name, epitope regions, optional UniProt accession, and optional PDB ID.</div>
+    <div class="workflow-step"><b>2.</b> Enter the virus/protein name and epitope regions; UniProt/PDB IDs are suggested automatically and can be manually overridden.</div>
     <div class="workflow-step"><b>3.</b> Click <b>Run Analysis</b>.</div>
-    <div class="workflow-step"><b>4.</b> Explore conservation plots, candidate tables, ML feature importance, and 3D structure highlights.</div>
+    <div class="workflow-step"><b>4.</b> Explore conservation plots, candidate tables, functional annotations, literature evidence, and 3D structure highlights.</div>
     """, unsafe_allow_html=True)
     st.markdown('</div>', unsafe_allow_html=True)
 
@@ -990,21 +1560,256 @@ def show_home_page():
 def show_methodology_page():
     st.markdown('<div class="section-card">', unsafe_allow_html=True)
     st.subheader("Methodology")
-    st.write("The workflow combines classical bioinformatics analysis with an interpretable machine learning layer.")
+    st.write("The workflow combines classical bioinformatics analysis with structural mapping and literature evidence.")
     st.markdown("""
-    <span class="badge-soft">NCBI Protein</span><span class="badge-soft">MUSCLE MSA</span><span class="badge-soft">Shannon entropy</span><span class="badge-soft">IEDB-style epitopes</span><span class="badge-soft">UniProt features</span><span class="badge-soft">PDB structure</span><span class="badge-soft">Random Forest</span>
+    <span class="badge-soft">NCBI Protein</span><span class="badge-soft">MUSCLE MSA</span><span class="badge-soft">ConSurf / Shannon entropy</span><span class="badge-soft">IEDB-style epitopes</span><span class="badge-soft">UniProt features</span><span class="badge-soft">PDB structure</span><span class="badge-soft">PubMed evidence</span>
     """, unsafe_allow_html=True)
     st.markdown("""
     <div class="workflow-step"><b>Data collection:</b> sequences are retrieved from NCBI Protein using the selected organism and protein name.</div>
     <div class="workflow-step"><b>Alignment:</b> sequences are aligned with MUSCLE to compare amino acid positions across variants/homologs.</div>
     <div class="workflow-step"><b>Conservation:</b> Shannon entropy is converted into a conservation score, where higher values indicate more stable positions.</div>
     <div class="workflow-step"><b>Epitope mapping:</b> known B-cell and T-cell epitope intervals are projected onto the aligned protein positions.</div>
-    <div class="workflow-step"><b>Scoring:</b> sliding windows are ranked using conservation, epitope overlap, and hotspot penalty.</div>
+    <div class="workflow-step"><b>Scoring:</b> sliding windows are ranked using conservation, epitope overlap, functional-region overlap, and hotspot penalty.</div>
     <div class="workflow-step"><b>Functional layer:</b> UniProt features are checked for overlap with top candidate regions.</div>
     <div class="workflow-step"><b>Structural layer:</b> candidate regions are mapped from the MSA reference sequence to PDB residue numbers before 3D highlighting.</div>
-    <div class="workflow-step"><b>ML layer:</b> Random Forest learns which features contribute most to candidate priority.</div>
     """, unsafe_allow_html=True)
     st.markdown('</div>', unsafe_allow_html=True)
+
+
+
+def get_openai_api_key():
+    """Read OpenAI API key from Streamlit secrets or environment variables."""
+    api_key = None
+    try:
+        api_key = st.secrets.get("OPENAI_API_KEY", None)
+    except Exception:
+        api_key = None
+    return api_key or os.getenv("OPENAI_API_KEY")
+
+
+@st.cache_data(show_spinner=False)
+def search_pubmed_articles(disease_query, email, max_results=8, years_back=5):
+    """Search PubMed and return titles, abstracts, journals, years, and links."""
+    if not disease_query.strip():
+        return pd.DataFrame()
+
+    Entrez.email = email
+    current_year = time.localtime().tm_year
+    start_year = current_year - years_back
+
+    search_term = (
+        f'({disease_query}) AND (vaccine OR immunology OR epitope OR antigen OR antibody OR "T cell" OR "B cell" OR protein OR conserved OR structure) '
+        f'AND ({start_year}:{current_year}[pdat])'
+    )
+
+    handle = Entrez.esearch(
+        db="pubmed",
+        term=search_term,
+        retmax=max_results,
+        sort="relevance"
+    )
+    record = Entrez.read(handle)
+    handle.close()
+
+    pmids = record.get("IdList", [])
+    if not pmids:
+        return pd.DataFrame()
+
+    time.sleep(0.35)
+    handle = Entrez.efetch(db="pubmed", id=pmids, rettype="xml", retmode="xml")
+    records = Entrez.read(handle)
+    handle.close()
+
+    rows = []
+    for article in records.get("PubmedArticle", []):
+        citation = article.get("MedlineCitation", {})
+        article_data = citation.get("Article", {})
+        pmid = str(citation.get("PMID", ""))
+
+        title = str(article_data.get("ArticleTitle", "No title available"))
+        journal = article_data.get("Journal", {}).get("Title", "Unknown journal")
+
+        pub_date = article_data.get("Journal", {}).get("JournalIssue", {}).get("PubDate", {})
+        year = pub_date.get("Year", "Unknown")
+
+        abstract_parts = article_data.get("Abstract", {}).get("AbstractText", [])
+        abstract = " ".join(str(part) for part in abstract_parts) if abstract_parts else "No abstract available."
+
+        rows.append({
+            "PMID": pmid,
+            "Year": year,
+            "Journal": journal,
+            "Title": title,
+            "Abstract": abstract,
+            "Link": f"https://pubmed.ncbi.nlm.nih.gov/{pmid}/"
+        })
+
+    return pd.DataFrame(rows)
+
+
+def summarize_pubmed_findings(articles_df, disease_query):
+    """Summarize PubMed abstracts using OpenAI if available; otherwise use extractive fallback."""
+    if articles_df.empty:
+        return "No articles were found to summarize."
+
+    combined_text = "\n\n".join(
+        [
+            f"Title: {row['Title']}\nAbstract: {row['Abstract']}"
+            for _, row in articles_df.head(6).iterrows()
+        ]
+    )
+
+    if not combined_text.strip() or combined_text.count("No abstract available") == len(articles_df):
+        return "The search found articles, but most did not include abstracts, so a reliable summary could not be generated."
+
+    api_key = get_openai_api_key()
+
+    if api_key:
+        try:
+            from openai import OpenAI
+            client = OpenAI(api_key=api_key)
+
+            prompt = f"""
+You are a bioinformatics research assistant.
+
+Topic: {disease_query}
+
+Using only the PubMed titles and abstracts below, summarize:
+1. Main vaccine-related findings
+2. Important proteins, epitopes, immune mechanisms, or biomarkers
+3. How the evidence may support vaccine target prioritization
+4. Limitations or uncertainties
+5. A short conclusion
+
+Keep it clear, scientific, and concise.
+
+PubMed evidence:
+{combined_text}
+"""
+            response = client.responses.create(
+                model="gpt-4.1-mini",
+                input=prompt
+            )
+            return response.output_text
+        except Exception as e:
+            st.warning(f"OpenAI summary failed ({e}). Make sure `openai` is in requirements.txt and OPENAI_API_KEY is set correctly. Using local extractive summary instead.")
+
+    # Local extractive fallback
+    text_only = " ".join(articles_df["Abstract"].fillna("").astype(str).tolist())
+    sentences = re.split(r'(?<=[.!?])\s+', text_only)
+    sentences = [s.strip() for s in sentences if len(s.strip()) > 45]
+
+    keywords = [
+        "vaccine", "epitope", "immune", "immun", "antibody", "t cell", "b cell",
+        "protein", "target", "mutation", "variant", "conserved", "expression",
+        "pathway", "biomarker", "infection", "disease", "therapy", "response"
+    ]
+
+    disease_words = [w.lower() for w in re.findall(r"[A-Za-z]+", disease_query) if len(w) > 3]
+
+    scored = []
+    for sent in sentences:
+        low = sent.lower()
+        score = sum(1 for kw in keywords if kw in low) + sum(1 for w in disease_words if w in low)
+        if score > 0:
+            scored.append((score, sent))
+
+    top_sentences = [s for _, s in sorted(scored, reverse=True)[:6]]
+    if not top_sentences:
+        top_sentences = sentences[:6]
+
+    return "\n".join([f"- {s}" for s in top_sentences])
+
+
+def show_disease_explorer_page():
+    st.markdown('<div class="section-card">', unsafe_allow_html=True)
+    st.subheader("AI Literature Explorer")
+    st.write(
+        "Search PubMed for a disease, virus, or protein, retrieve recent biomedical papers, "
+        "and generate an OpenAI-powered summary from the article abstracts when an API key is configured. "
+        "By default, the query uses the virus and protein selected in the sidebar."
+    )
+
+    api_key_available = bool(get_openai_api_key())
+
+    if api_key_available:
+        st.success("OpenAI API key detected. Summaries will use real AI.")
+    else:
+        st.info("OpenAI API key not detected. The app will use a local extractive fallback summary.")
+
+    col_a, col_b, col_c = st.columns([2, 1, 1])
+    with col_a:
+        default_pubmed_query = f"{virus} {protein} vaccine"
+        if "last_pubmed_default" not in st.session_state:
+            st.session_state["last_pubmed_default"] = default_pubmed_query
+            st.session_state["disease_query"] = default_pubmed_query
+
+        if default_pubmed_query != st.session_state.get("last_pubmed_default"):
+            st.session_state["last_pubmed_default"] = default_pubmed_query
+            st.session_state["disease_query"] = default_pubmed_query
+
+        disease_query = st.text_input("Disease / virus / protein query", key="disease_query")
+    with col_b:
+        max_pubmed_results = st.slider("Articles", 3, 20, 8, key="pubmed_max_results")
+    with col_c:
+        years_back = st.slider("Years back", 1, 20, 5, key="pubmed_years_back")
+
+    search_clicked = st.button("Search PubMed", key="search_pubmed_button")
+    st.markdown('</div>', unsafe_allow_html=True)
+
+    if search_clicked:
+        try:
+            with st.spinner("Searching PubMed and reading abstracts..."):
+                articles_df = search_pubmed_articles(
+                    disease_query=disease_query,
+                    email=email,
+                    max_results=max_pubmed_results,
+                    years_back=years_back
+                )
+
+            st.session_state["pubmed_articles_df"] = articles_df
+            st.session_state["pubmed_summary"] = summarize_pubmed_findings(articles_df, disease_query)
+            st.session_state["pubmed_done"] = True
+
+        except Exception as e:
+            st.error(f"PubMed search failed: {e}")
+            st.info("Check your Entrez email, internet connection, or try a more specific disease term.")
+
+    if st.session_state.get("pubmed_done", False):
+        articles_df = st.session_state.get("pubmed_articles_df", pd.DataFrame())
+        summary = st.session_state.get("pubmed_summary", "")
+
+        st.markdown('<div class="section-card">', unsafe_allow_html=True)
+        st.subheader("OpenAI Literature Summary")
+        st.markdown(summary)
+        st.caption(
+            "If OPENAI_API_KEY is configured, this summary is generated with OpenAI from PubMed abstracts. "
+            "If not, the app uses a local extractive fallback. Use the linked papers to verify details before making biological conclusions."
+        )
+        st.markdown('</div>', unsafe_allow_html=True)
+
+        st.markdown('<div class="section-card">', unsafe_allow_html=True)
+        st.subheader("Retrieved PubMed Articles")
+
+        if articles_df.empty:
+            st.warning("No PubMed articles found for this query.")
+        else:
+            for _, row in articles_df.iterrows():
+                st.markdown(f"### {row['Title']}")
+                st.write(f"**Journal:** {row['Journal']}  |  **Year:** {row['Year']}  |  **PMID:** {row['PMID']}")
+                st.write(row["Abstract"])
+                st.markdown(f"[Open on PubMed]({row['Link']})")
+                st.divider()
+
+            csv = articles_df.to_csv(index=False).encode("utf-8")
+            st.download_button(
+                "Download PubMed results CSV",
+                csv,
+                "pubmed_disease_results.csv",
+                "text/csv"
+            )
+
+        st.markdown('</div>', unsafe_allow_html=True)
 
 # main app
 if page == "Home":
@@ -1013,17 +1818,32 @@ if page == "Home":
 elif page == "Methodology":
     show_methodology_page()
 
+elif page == "Disease Explorer":
+    show_disease_explorer_page()
+
 elif page == "Analysis":
     st.markdown('<div class="section-card">', unsafe_allow_html=True)
-    st.subheader("Run the Pipeline")
-    st.write("Set your analysis settings in the sidebar, then run the analysis. Results will stay visible while you explore tabs or change the 3D candidate selector.")
+    st.subheader("Run the Prioritization Pipeline")
+    st.write(
+        "The current setup will analyze the selected virus and protein, retrieve matching sequences, compute conservation, "
+        "score candidate windows, integrate UniProt/PDB mappings, and generate interactive results."
+    )
+    setup_col1, setup_col2, setup_col3 = st.columns(3)
+    setup_col1.metric("Virus", virus)
+    setup_col2.metric("Protein", protein)
+    setup_col3.metric("UniProt", uniprot_accession if uniprot_accession else "N/A")
+    if st.session_state.get("analysis_done", False) and settings_changed:
+        st.warning("Settings changed. Results are outdated. Run analysis again to refresh plots, table, and UniProt functional regions.")
+        if not auto_run_on_change:
+            st.session_state["analysis_done"] = False
     run_button = st.button("Run Analysis", key="run_analysis_button")
+    should_run_analysis = run_button or (auto_run_on_change and settings_changed)
     st.markdown('</div>', unsafe_allow_html=True)
 
     if "analysis_done" not in st.session_state:
         st.session_state["analysis_done"] = False
 
-    if run_button:
+    if should_run_analysis:
         try:
             epitopes = parse_epitopes(epitope_text)
             with st.spinner("Fetching sequences from NCBI..."):
@@ -1040,19 +1860,40 @@ elif page == "Analysis":
             hotspot_regions = group_regions(hotspot_positions)
             conserved_regions = group_regions(conserved_positions)
             epitope_map = build_epitope_map(epitopes, len(conservation_scores))
-            windows_df = score_windows(conservation_scores, epitope_map, window_size, window_step, hotspot_threshold, coef_cons, coef_epitope, coef_hotspot)
-            ranked_df = windows_df.sort_values(by=["score", "avg_conservation", "hotspot_fraction"], ascending=[False, False, True]).reset_index(drop=True)
+            features_df = fetch_uniprot_features(uniprot_accession).copy()
+            if not features_df.empty:
+                features_df["source_accession"] = uniprot_accession
+            functional_map = build_functional_map(features_df, len(conservation_scores))
+            windows_df = score_windows(
+                conservation_scores,
+                epitope_map,
+                functional_map,
+                window_size,
+                window_step,
+                hotspot_threshold,
+                coef_cons,
+                coef_epitope,
+                coef_functional,
+                coef_hotspot
+            )
+            ranked_df = windows_df.sort_values(
+                by=["score", "avg_conservation", "functional_fraction", "hotspot_fraction"],
+                ascending=[False, False, False, True]
+            ).reset_index(drop=True)
             ranked_df.insert(0, "rank", ranked_df.index + 1)
             ranked_df["priority"] = ranked_df["score"].apply(lambda x: assign_priority(x, high_score, medium_score))
             final_candidates = remove_redundant_windows(ranked_df)
-            features_df = fetch_uniprot_features(uniprot_accession)
-            final_candidates = add_functional_overlap(final_candidates, features_df)
+            final_candidates = add_functional_notes(final_candidates, features_df)
+            if "functional_fraction" not in final_candidates.columns:
+                final_candidates["functional_fraction"] = 0.0
 
             st.session_state["analysis_done"] = True
             st.session_state["final_candidates"] = final_candidates
             st.session_state["conservation_scores"] = conservation_scores
             st.session_state["windows_df"] = windows_df
             st.session_state["features_df"] = features_df
+            st.session_state["functional_map"] = functional_map
+            st.session_state["coef_functional"] = coef_functional
             st.session_state["after_count"] = after_count
             st.session_state["hotspot_regions"] = hotspot_regions
             st.session_state["conserved_threshold"] = conserved_threshold
@@ -1063,6 +1904,8 @@ elif page == "Analysis":
             st.session_state["pdb_id"] = pdb_id
             st.session_state["pdb_chain"] = pdb_chain
             st.session_state["uniprot_accession"] = uniprot_accession
+            st.session_state["last_run_signature"] = current_settings_signature
+            st.session_state["last_run_label"] = f"{virus} | {protein} | {time.strftime('%H:%M:%S')}"
 
         except Exception as e:
             st.session_state["analysis_done"] = False
@@ -1085,6 +1928,7 @@ elif page == "Analysis":
         saved_pdb_chain = st.session_state.get("pdb_chain", pdb_chain)
         saved_uniprot_accession = st.session_state.get("uniprot_accession", uniprot_accession)
 
+        st.caption(f"Active analysis: {st.session_state.get('last_run_label', 'not available')}")
         col1, col2, col3, col4 = st.columns(4)
         col1.metric("Sequences kept", after_count)
         col2.metric("Alignment length", len(conservation_scores))
@@ -1095,8 +1939,8 @@ elif page == "Analysis":
             st.session_state["result_view_selector"] = "Overview"
 
         st.markdown('<div class="result-tabs-shell">', unsafe_allow_html=True)
-        tab_cols = st.columns(5)
-        tab_options = ["Overview", "Candidate Table", "Functional Annotation", "3D Structure", "Machine Learning"]
+        tab_cols = st.columns(4)
+        tab_options = ["Overview", "Candidate Table", "Functional Annotation", "3D Structure"]
         for i, option in enumerate(tab_options):
             with tab_cols[i]:
                 if st.button(option, key=f"result_tab_{i}", use_container_width=True):
@@ -1108,10 +1952,29 @@ elif page == "Analysis":
 
         if result_view == "Overview":
             st.markdown('<div class="section-card">', unsafe_allow_html=True)
-            st.subheader("Conservation Plot")
-            st.pyplot(plot_conservation(conservation_scores, conserved_threshold, hotspot_threshold))
-            st.subheader("Top Candidate Regions")
-            st.pyplot(plot_candidates(conservation_scores, final_candidates, top_n=10))
+            st.subheader("Evidence Map")
+            st.markdown('<div class="viz-caption">Conservation scores, candidate windows, and UniProt functional regions are shown together to make the biological evidence easier to interpret.</div>', unsafe_allow_html=True)
+            st.pyplot(plot_functional_regions(
+                conservation_scores,
+                final_candidates,
+                features_df,
+                conserved_threshold,
+                hotspot_threshold,
+                top_n=10
+            ))
+
+            viz_col1, viz_col2 = st.columns([1, 1])
+            with viz_col1:
+                st.subheader("Top Candidate Scores")
+                st.pyplot(plot_candidate_score_breakdown(final_candidates, top_n=15))
+            with viz_col2:
+                st.subheader("Evidence Components")
+                st.pyplot(plot_candidate_feature_fractions(final_candidates, top_n=12))
+
+            with st.expander("Show simple conservation-only plot"):
+                st.pyplot(plot_conservation(conservation_scores, conserved_threshold, hotspot_threshold))
+                st.pyplot(plot_candidates(conservation_scores, final_candidates, top_n=10))
+
             st.markdown('</div>', unsafe_allow_html=True)
 
         elif result_view == "Candidate Table":
@@ -1125,60 +1988,162 @@ elif page == "Analysis":
         elif result_view == "Functional Annotation":
             st.markdown('<div class="section-card">', unsafe_allow_html=True)
             st.subheader("Functional Annotation Layer")
+            st.write(
+                "Functional regions from UniProt are converted into a weighted functional_fraction, "
+                "then added to the candidate score using the sidebar Functional region weight. "
+                "Different feature types are weighted differently because binding sites, domains, glycosylation sites, "
+                "and other annotations do not have equal biological importance."
+            )
             if saved_uniprot_accession:
                 if features_df.empty:
                     st.warning("No UniProt features found. Check the accession ID.")
                 else:
-                    st.write("UniProt features retrieved:")
-                    st.dataframe(features_df, use_container_width=True)
-                    st.write("Candidates with functional overlap:")
-                    st.dataframe(final_candidates[["rank", "start", "end", "score", "priority", "functional_overlap", "functional_notes"]], use_container_width=True)
+                    st.caption(f"Displayed UniProt accession: {saved_uniprot_accession}")
+                    st.subheader("Weighted UniProt Feature Categories")
+                    feature_summary_df = summarize_functional_feature_types(features_df)
+                    st.dataframe(feature_summary_df, use_container_width=True, hide_index=True)
+
+                    st.subheader("Candidate Functional Notes")
+                    display_cols = ["rank", "start", "end", "score", "priority", "functional_fraction", "functional_notes"]
+                    st.dataframe(final_candidates[display_cols], use_container_width=True)
+
+                    st.subheader("Color-coded Candidate Notes")
+                    st.markdown('<div class="viz-caption">These tags explain which biological feature types overlap each top candidate region.</div>', unsafe_allow_html=True)
+                    for _, row in final_candidates.head(12).iterrows():
+                        st.markdown(
+                            f"""
+                            <div class="candidate-card">
+                                <div class="candidate-title">Rank {int(row['rank'])} | Positions {int(row['start'])}-{int(row['end'])} | Score {row['score']}</div>
+                                <div class="candidate-meta">Functional fraction: {row.get('functional_fraction', 0)} | Priority: {row.get('priority', '')}</div>
+                            """,
+                            unsafe_allow_html=True
+                        )
+
+                        if row.get("functional_notes"):
+                            note_items = str(row["functional_notes"]).split("; ")
+                            badge_html = ""
+                            for note in note_items:
+                                category = note.split(":")[0].strip()
+                                css_class = functional_category_class(category)
+                                badge_html += f'<span class="func-badge {css_class}">{note}</span>'
+                            st.markdown(badge_html, unsafe_allow_html=True)
+                        else:
+                            st.markdown('<div class="empty-note">No overlapping UniProt functional annotation for this candidate.</div>', unsafe_allow_html=True)
+
+                        st.markdown("</div>", unsafe_allow_html=True)
+
+                    st.subheader("Functional Regions on Conservation Plot")
+                    st.pyplot(plot_functional_regions(
+                        conservation_scores,
+                        final_candidates,
+                        features_df,
+                        conserved_threshold,
+                        hotspot_threshold,
+                        top_n=10
+                    ))
             else:
-                st.info("Enter a UniProt accession in the sidebar to add functional annotations.")
+                st.info("No UniProt accession is available. Enable manual database mapping in the sidebar and enter a UniProt accession.")
             st.markdown('</div>', unsafe_allow_html=True)
 
         elif result_view == "3D Structure":
             st.markdown('<div class="section-card">', unsafe_allow_html=True)
             st.subheader("3D Structural Biology Layer")
+            st.write(
+                "This section acts as a candidate inspection panel: it shows the selected region sequence, score profile, functional notes, biochemical composition, and mapped 3D location. "
+                "This helps judge whether a region is not only highly ranked computationally, but also biologically interpretable as a vaccine target."
+            )
+            st.markdown(
+                """
+                <div class="small-note">
+                <b>How to interpret this view:</b><br>
+                • Gray = full protein structure<br>
+                • Red = selected candidate region mapped from the sequence alignment to PDB residue numbers<br>
+                • Missing/unmapped residues may occur because experimental structures often lack flexible loops or unresolved regions<br>
+                • The composition table shows whether the selected region is enriched in hydrophobic, polar, charged, aromatic, or sulfur-containing residues<br>                • A strong candidate is ideally conserved, epitope-overlapping, functionally relevant, structurally accessible, and biologically interpretable
+                </div>
+                """,
+                unsafe_allow_html=True
+            )
             if final_candidates.empty:
                 st.warning("No candidates available.")
             else:
+                top_3d_candidates = final_candidates.head(20)
                 selected_rank = st.selectbox(
-                    "Choose candidate rank to highlight",
-                    final_candidates["rank"].astype(int).tolist(),
+                    "Choose candidate rank to highlight (top 20 only)",
+                    top_3d_candidates["rank"].astype(int).tolist(),
                     key="selected_3d_candidate"
                 )
-                selected = final_candidates[final_candidates["rank"] == selected_rank].iloc[0]
+
+                selected = top_3d_candidates[top_3d_candidates["rank"] == selected_rank].iloc[0]
                 h_start = int(selected["start"])
                 h_end = int(selected["end"])
+
+                aligned_region, region_sequence = extract_region_sequence_from_alignment(
+                    ref_aligned_sequence,
+                    h_start,
+                    h_end
+                )
+
                 st.write(f"Highlighting candidate region: {h_start}–{h_end}")
+
+                info_col1, info_col2 = st.columns([1.2, 1])
+                with info_col1:
+                    st.markdown("**Selected region sequence**")
+                    st.code(region_sequence if region_sequence else "No ungapped residues found in this region.")
+
+                    st.markdown("**Candidate score profile**")
+                    st.dataframe(
+                        pd.DataFrame([{
+                            "Rank": int(selected["rank"]),
+                            "Start": h_start,
+                            "End": h_end,
+                            "Score": selected["score"],
+                            "Average conservation": selected["avg_conservation"],
+                            "Epitope fraction": selected["epitope_fraction"],
+                            "Functional fraction": selected.get("functional_fraction", 0),
+                            "Hotspot fraction": selected["hotspot_fraction"],
+                            "Priority": selected["priority"]
+                        }]),
+                        use_container_width=True
+                    )
+
+                if selected.get("functional_notes"):
+                    st.markdown("**Functional notes for selected region**")
+                    st.info(str(selected["functional_notes"]))
+
+                with info_col2:
+                    property_df, aa_df = summarize_region_composition(region_sequence)
+
+                    st.markdown("**Biochemical material profile**")
+                    if property_df.empty:
+                        st.info("No sequence composition available for this candidate.")
+                    else:
+                        st.dataframe(property_df, use_container_width=True, hide_index=True)
+                        st.pyplot(plot_region_composition_pie(property_df))
+
+                with st.expander("Amino-acid composition details"):
+                    if region_sequence:
+                        st.dataframe(aa_df, use_container_width=True, hide_index=True)
+                    else:
+                        st.info("No amino-acid composition to display.")
+
+                st.markdown(
+                    """
+                    <div class="small-note">
+                    <b>How this supports interpretation:</b><br>
+                    Hydrophobic-rich regions may be buried inside the protein core, while charged or polar-rich regions are more likely to be solvent-exposed.
+                    Aromatic and charged residues can also contribute to antibody recognition, binding interactions, or structural stability.
+                    This composition layer helps interpret whether the selected vaccine candidate is only statistically strong, or also biologically meaningful.
+                    </div>
+                    """,
+                    unsafe_allow_html=True
+                )
+
                 if saved_pdb_id:
                     show_3d_structure(saved_pdb_id, saved_pdb_chain, h_start, h_end, ref_aligned_sequence)
-                    st.caption("Residues are mapped from the MSA reference sequence to the selected PDB chain. Unmapped positions may occur when residues are missing from the experimental structure.")
+                    st.caption("Residues are mapped from the MSA reference sequence to the selected PDB chain using pairwise sequence alignment. This makes the 3D highlighting more rigorous than directly assuming alignment positions equal PDB residue numbers.")
                 else:
-                    st.info("Enter a PDB ID in the sidebar to show a structure.")
+                    st.info("No PDB ID is available. Enable manual database mapping in the sidebar and enter a PDB ID.")
             st.markdown('</div>', unsafe_allow_html=True)
-        
-        elif result_view == "Machine Learning":
-            st.markdown('<div class="section-card">', unsafe_allow_html=True)
-            st.subheader("Classification Model")
-            model, le, importances, report = train_ml_classifier(windows_df, high_score, medium_score)
-            if model is None:
-                st.warning(report)
-            else:
-                st.write("This classifier predicts Low / Medium / High candidate priority from conservation, epitope fraction, and hotspot fraction.")
-                st.code(report)
-                st.write("Feature importance:")
-                st.dataframe(importances, use_container_width=True)
-                fig, ax = plt.subplots(figsize=(6, 4))
-                ax.bar(importances["feature"], importances["importance"], color=["#2563eb", "#7c3aed", "#f97316"])
-                ax.grid(axis="y", alpha=0.18)
-                ax.set_ylabel("Importance")
-                ax.set_title("Random Forest Feature Importance")
-                plt.xticks(rotation=30, ha="right")
-                st.pyplot(fig)
-                st.warning("Important: this is weakly supervised because labels come from your own scoring rules. For a stronger biological ML model, train using experimentally validated positive and negative vaccine target regions.")
-            st.markdown('</div>', unsafe_allow_html=True)
-
-    else:
+else:
         st.markdown('<div class="small-note">Set your parameters in the sidebar, then click <b>Run Analysis</b> to start the pipeline.</div>', unsafe_allow_html=True)

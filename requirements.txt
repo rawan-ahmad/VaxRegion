@@ -7,3 +7,4 @@ requests
 scikit-learn
 py3Dmol
 stmol
+openai
