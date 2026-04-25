@@ -435,25 +435,108 @@ def run_muscle(input_fasta):
     return aligned_fasta, alignment
 
 
-def compute_conservation(alignment):
+def compute_conservation_fallback(alignment):
     conservation_scores = []
     H_max = math.log2(20)
-
     for i in range(alignment.get_alignment_length()):
         column = [rec.seq[i] for rec in alignment if rec.seq[i] != "-"]
-
         if not column:
             conservation_scores.append(0.0)
             continue
-
         counts = Counter(column)
         total = len(column)
         entropy = -sum((count / total) * math.log2(count / total) for count in counts.values())
-        score = 1 - (entropy / H_max)
-        conservation_scores.append(score)
-
+        conservation_scores.append(1 - (entropy / H_max))
     return np.array(conservation_scores)
 
+
+def compute_conservation(alignment, email="user@example.com", use_consurf=True):
+    if not use_consurf:
+        return compute_conservation_fallback(alignment)
+
+    SUBMIT_URL = "https://consurf.tau.ac.il/php/API_submit.php"
+    RESULTS_URL = "https://consurf.tau.ac.il/php/API_getResults.php"
+    MAX_WAIT_SEC = 300
+    POLL_INTERVAL = 15
+
+    try:
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".fasta", delete=False) as tmp:
+            for rec in alignment:
+                tmp.write(f">{rec.id}\n{str(rec.seq)}\n")
+            tmp_path = tmp.name
+
+        with open(tmp_path, "r") as fh:
+            msa_text = fh.read()
+        os.unlink(tmp_path)
+
+        payload = {
+            "ALGORITHM":       "Likelihood",
+            "MATRIX":          "WAG",
+            "MSA_SEQS":        msa_text,
+            "MSA_NAME":        "VaxRegion_MSA",
+            "EMAIL":           email,
+            "COMPUTATION_MSA": "1",
+        }
+        resp = requests.post(SUBMIT_URL, data=payload, timeout=30)
+        resp.raise_for_status()
+
+        job_id = None
+        for line in resp.text.splitlines():
+            if "job_id" in line.lower() or line.strip().isdigit():
+                job_id = line.strip().split("=")[-1].strip()
+                break
+        if not job_id:
+            try:
+                rjson = resp.json()
+                job_id = str(rjson.get("job_id") or rjson.get("jobID") or "")
+            except Exception:
+                pass
+
+        if not job_id:
+            raise ValueError(f"Could not parse job ID: {resp.text[:200]}")
+
+        elapsed = 0
+        grades = None
+        while elapsed < MAX_WAIT_SEC:
+            time.sleep(POLL_INTERVAL)
+            elapsed += POLL_INTERVAL
+            poll = requests.get(RESULTS_URL, params={"job_id": job_id}, timeout=30)
+            poll.raise_for_status()
+            text = poll.text
+
+            if "not ready" in text.lower() or "running" in text.lower():
+                continue
+
+            grades = []
+            for line in text.splitlines():
+                line = line.strip()
+                if not line or line.startswith("#") or line.startswith("POS"):
+                    continue
+                parts = line.split()
+                if len(parts) >= 4:
+                    try:
+                        grades.append(int(parts[3]))
+                    except ValueError:
+                        continue
+            if grades:
+                break
+
+        if not grades:
+            raise RuntimeError("ConSurf timed out or returned no grades.")
+
+        scores = np.array([(g - 1) / 8.0 for g in grades], dtype=float)
+
+        aln_len = alignment.get_alignment_length()
+        if len(scores) < aln_len:
+            scores = np.pad(scores, (0, aln_len - len(scores)), constant_values=0.0)
+        else:
+            scores = scores[:aln_len]
+
+        return scores
+
+    except Exception as exc:
+        st.warning(f"ConSurf unavailable ({exc}). Falling back to Shannon entropy.")
+        return compute_conservation_fallback(alignment)
 
 def group_regions(positions):
     regions = []
@@ -950,7 +1033,8 @@ elif page == "Analysis":
                 aligned_path, alignment = run_muscle(fasta_path)
             st.success(f"Alignment complete. Alignment length: {alignment.get_alignment_length()} positions.")
 
-            conservation_scores = compute_conservation(alignment)
+            with st.spinner("Computing conservation scores via ConSurf (Rate4Site)… this may take 1–3 min"):
+              conservation_scores = compute_conservation(alignment, email=email)
             hotspot_positions = [i for i, score in enumerate(conservation_scores) if score < hotspot_threshold]
             conserved_positions = [i for i, score in enumerate(conservation_scores) if score >= conserved_threshold]
             hotspot_regions = group_regions(hotspot_positions)
