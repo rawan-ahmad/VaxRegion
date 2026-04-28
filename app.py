@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
+import plotly.graph_objects as go
 import math
 import time
 import os
@@ -427,6 +428,43 @@ st.markdown("""
         margin-bottom: 12px;
     }
 
+
+    /* Readability fixes for white-on-white issues */
+    .stApp, .main, p, span, div, label {
+        color: #0f172a;
+    }
+
+    [data-testid="stSidebar"] .stCaption,
+    [data-testid="stSidebar"] p,
+    [data-testid="stSidebar"] span,
+    [data-testid="stSidebar"] label {
+        color: #f8fafc !important;
+    }
+
+    [data-testid="stSidebar"] input,
+    [data-testid="stSidebar"] textarea,
+    [data-testid="stSidebar"] div[data-baseweb="select"] * {
+        color: #0f172a !important;
+    }
+
+    div[data-baseweb="popover"] * {
+        color: #0f172a !important;
+        background-color: #ffffff !important;
+    }
+
+    [data-testid="stMetricLabel"],
+    [data-testid="stMetricValue"] {
+        color: #0f172a !important;
+    }
+
+    .stMarkdown, .stDataFrame, .stTable {
+        color: #0f172a !important;
+    }
+
+    button[kind="primary"], .stButton > button {
+        color: #ffffff !important;
+    }
+
 </style>
 """, unsafe_allow_html=True)
 
@@ -447,72 +485,426 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 
-def get_database_defaults(virus_name, protein_name):
-    """Return suggested UniProt accession, PDB ID, and chain for common virus/protein combinations."""
-    key = f"{virus_name} {protein_name}".lower()
+# Automatic database mapping: virus/protein -> UniProt -> related PDB structure
+@st.cache_data(show_spinner=False)
+def fetch_taxonomy_id(virus_name):
+    """
+    Search UniProt Taxonomy to resolve a virus/organism name to a TaxID.
+    This improves UniProt search precision compared with free-text organism names.
+    """
+    virus_name = virus_name.strip()
+    if not virus_name:
+        return {"tax_id": "", "scientific_name": ""}
 
-    presets = [
-        {
-            "match": ["sars", "cov", "spike"],
-            "uniprot": "P0DTC2",
-            "pdb": "6VSB",
-            "chain": "A",
-            "label": "SARS-CoV-2 Spike glycoprotein"
-        },
-        {
-            "match": ["hiv", "gp120"],
-            "uniprot": "P04578",
-            "pdb": "6MEO",
-            "chain": "G",
-            "label": "HIV-1 envelope glycoprotein gp120"
-        },
-        {
-            "match": ["influenza", "hemagglutinin"],
-            "uniprot": "P03437",
-            "pdb": "1RU7",
-            "chain": "A",
-            "label": "Influenza A hemagglutinin"
-        },
-        {
-            "match": ["influenza", "ha"],
-            "uniprot": "P03437",
-            "pdb": "1RU7",
-            "chain": "A",
-            "label": "Influenza A hemagglutinin"
-        },
-        {
-            "match": ["hepatitis", "b", "surface"],
-            "uniprot": "P03138",
-            "pdb": "",
-            "chain": "A",
-            "label": "Hepatitis B surface antigen"
-        },
-        {
-            "match": ["dengue", "envelope"],
-            "uniprot": "P29990",
-            "pdb": "1OKE",
-            "chain": "A",
-            "label": "Dengue virus envelope protein"
-        },
-        {
-            "match": ["zika", "envelope"],
-            "uniprot": "A0A024B7W1",
-            "pdb": "5IRE",
-            "chain": "A",
-            "label": "Zika virus envelope protein"
-        },
+    url = "https://rest.uniprot.org/taxonomy/search"
+    params = {
+        "query": virus_name,
+        "format": "json",
+        "size": 5
+    }
+
+    try:
+        r = requests.get(url, params=params, timeout=20)
+        if r.status_code != 200:
+            return {"tax_id": "", "scientific_name": ""}
+
+        results = r.json().get("results", [])
+        if not results:
+            return {"tax_id": "", "scientific_name": ""}
+
+        # Prefer exact or near-exact scientific/common name match.
+        query_low = virus_name.lower()
+        best = results[0]
+        for item in results:
+            scientific = str(item.get("scientificName", "")).lower()
+            common = str(item.get("commonName", "")).lower()
+            if query_low == scientific or query_low == common or query_low in scientific:
+                best = item
+                break
+
+        return {
+            "tax_id": str(best.get("taxonId", "")),
+            "scientific_name": best.get("scientificName", virus_name)
+        }
+
+    except Exception:
+        return {"tax_id": "", "scientific_name": ""}
+
+
+@st.cache_data(show_spinner=False)
+def search_uniprot_candidates(virus_name, protein_name, size=15):
+    """
+    Search UniProt using TaxID when possible, then return multiple ranked candidates.
+    This avoids blindly taking the first broad result.
+    """
+    virus_name = virus_name.strip()
+    protein_name = protein_name.strip()
+
+    if not virus_name or not protein_name:
+        return []
+
+    tax_info = fetch_taxonomy_id(virus_name)
+    tax_id = tax_info.get("tax_id", "")
+    scientific_name = tax_info.get("scientific_name", "")
+
+    if tax_id:
+        organism_filter = f"organism_id:{tax_id}"
+    else:
+        organism_filter = f'organism_name:"{virus_name}"'
+
+    url = "https://rest.uniprot.org/uniprotkb/search"
+
+    queries = [
+        f'({protein_name}) AND {organism_filter} AND reviewed:true',
+        f'({protein_name}) AND {organism_filter}',
+        f'({protein_name}) AND ({virus_name}) AND reviewed:true',
+        f'({protein_name}) AND ({virus_name})',
     ]
 
-    for preset in presets:
-        if all(term in key for term in preset["match"]):
-            return preset
+    collected = []
+    seen = set()
+
+    for query in queries:
+        params = {
+            "query": query,
+            "format": "json",
+            "size": size,
+            "fields": "accession,reviewed,protein_name,gene_names,organism_name,length"
+        }
+
+        try:
+            r = requests.get(url, params=params, timeout=20)
+            if r.status_code != 200:
+                continue
+
+            for result in r.json().get("results", []):
+                accession = result.get("primaryAccession", "")
+                if not accession or accession in seen:
+                    continue
+
+                protein_desc = result.get("proteinDescription", {})
+                recommended = protein_desc.get("recommendedName", {}).get("fullName", {}).get("value", "")
+
+                submission_names = protein_desc.get("submissionNames", [])
+                submission_name = ""
+                if submission_names:
+                    submission_name = submission_names[0].get("fullName", {}).get("value", "")
+
+                alternative_names = []
+                for alt in protein_desc.get("alternativeNames", []):
+                    alt_name = alt.get("fullName", {}).get("value", "")
+                    if alt_name:
+                        alternative_names.append(alt_name)
+
+                protein_full_name = recommended or submission_name or ""
+                all_names = " | ".join([protein_full_name] + alternative_names)
+
+                organism = result.get("organism", {}).get("scientificName", "")
+                reviewed = result.get("entryType", "")
+                length = result.get("sequence", {}).get("length", None)
+
+                collected.append({
+                    "accession": accession,
+                    "protein_name": protein_full_name,
+                    "all_names": all_names,
+                    "organism": organism,
+                    "reviewed": reviewed,
+                    "length": length,
+                    "tax_id": tax_id,
+                    "taxonomy_name": scientific_name,
+                })
+                seen.add(accession)
+
+        except Exception:
+            continue
+
+    return collected
+
+
+def score_uniprot_candidate(candidate, virus_name, protein_name):
+    """
+    Score UniProt relevance using TaxID/organism match, protein-name match,
+    reviewed status, and penalties for broad or low-quality matches.
+    """
+    score = 0
+    protein_query = protein_name.lower().strip()
+    virus_query = virus_name.lower().strip()
+
+    candidate_protein = str(candidate.get("protein_name", "")).lower()
+    candidate_all_names = str(candidate.get("all_names", candidate_protein)).lower()
+    candidate_organism = str(candidate.get("organism", "")).lower()
+    reviewed = str(candidate.get("reviewed", "")).lower()
+    length = candidate.get("length")
+
+    protein_terms = [t for t in re.split(r"[\s/_-]+", protein_query) if len(t) > 1]
+    virus_terms = [t for t in re.split(r"[\s/_-]+", virus_query) if len(t) > 1]
+
+    # Organism matching
+    if virus_query and virus_query in candidate_organism:
+        score += 8
+    else:
+        score += sum(1 for t in virus_terms if t in candidate_organism)
+
+    # Protein matching
+    if protein_query and protein_query in candidate_all_names:
+        score += 10
+    score += 2 * sum(1 for t in protein_terms if t in candidate_all_names)
+
+    # Reviewed Swiss-Prot entries are usually better curated.
+    if "reviewed" in reviewed:
+        score += 5
+
+    synonym_groups = {
+        "spike": ["spike", "surface glycoprotein", "s glycoprotein"],
+        "hemagglutinin": ["hemagglutinin", "ha"],
+        "ha": ["hemagglutinin", "ha"],
+        "envelope": ["envelope", "e protein", "glycoprotein e"],
+        "glycoprotein": ["glycoprotein", "surface glycoprotein"],
+        "gp120": ["gp120", "envelope glycoprotein gp120"],
+        "gp41": ["gp41", "transmembrane protein gp41"],
+        "capsid": ["capsid"],
+        "surface antigen": ["surface antigen", "hbsag"],
+        "l1": ["major capsid protein l1", "l1"],
+    }
+
+    for key, synonyms in synonym_groups.items():
+        if key in protein_query and any(s in candidate_all_names for s in synonyms):
+            score += 6
+
+    # Penalties
+    if "polyprotein" in candidate_all_names and "polyprotein" not in protein_query:
+        score -= 6
+    if "fragment" in candidate_all_names:
+        score -= 4
+    if "uncharacterized" in candidate_all_names:
+        score -= 5
+
+    # Prefer full proteins, but avoid gigantic polyproteins unless requested.
+    try:
+        if length is not None and int(length) > 2500 and "polyprotein" not in protein_query:
+            score -= 3
+    except Exception:
+        pass
+
+    return score
+
+
+@st.cache_data(show_spinner=False)
+def fetch_uniprot_accession(virus_name, protein_name):
+    """
+    Return the highest-scoring UniProt accession and the ranked candidate list.
+    """
+    candidates = search_uniprot_candidates(virus_name, protein_name, size=15)
+
+    if not candidates:
+        return {
+            "accession": "",
+            "protein_name": "",
+            "organism": "",
+            "tax_id": "",
+            "taxonomy_name": "",
+            "candidates": []
+        }
+
+    scored = []
+    for candidate in candidates:
+        c = dict(candidate)
+        c["match_score"] = score_uniprot_candidate(c, virus_name, protein_name)
+        scored.append(c)
+
+    scored = sorted(scored, key=lambda x: x["match_score"], reverse=True)
+    best = scored[0]
 
     return {
-        "uniprot": "",
-        "pdb": "",
-        "chain": "A",
-        "label": "No automatic match found"
+        "accession": best.get("accession", ""),
+        "protein_name": best.get("protein_name", ""),
+        "organism": best.get("organism", ""),
+        "tax_id": best.get("tax_id", ""),
+        "taxonomy_name": best.get("taxonomy_name", ""),
+        "candidates": scored
     }
+
+
+@st.cache_data(show_spinner=False)
+def fetch_uniprot_pdb_crossrefs(uniprot_accession, max_structures=5):
+    """
+    Read the PDB structures directly from the UniProtKB entry page.
+
+    This matches the UniProt '3D structure databases' table:
+    PDB entry, method, resolution, chains/positions.
+    """
+    if not uniprot_accession:
+        return []
+
+    url = f"https://rest.uniprot.org/uniprotkb/{uniprot_accession}.json"
+
+    try:
+        r = requests.get(url, timeout=25)
+        if r.status_code != 200:
+            return []
+
+        data = r.json()
+        refs = data.get("uniProtKBCrossReferences", [])
+
+        pdb_rows = []
+        for ref in refs:
+            if ref.get("database") != "PDB":
+                continue
+
+            pdb_id = ref.get("id", "")
+            props = {p.get("key"): p.get("value") for p in ref.get("properties", [])}
+
+            method = props.get("Method", "")
+            resolution = props.get("Resolution", "")
+            chains = props.get("Chains", "")
+
+            # Examples:
+            # "A/B/C=1-1208"
+            # "A=319-541"
+            chain_part = chains.split("=")[0].strip() if chains else "A"
+            first_chain = chain_part.split("/")[0].strip() if chain_part else "A"
+            positions = chains.split("=")[1].strip() if "=" in chains else ""
+
+            pdb_rows.append({
+                "pdb": pdb_id,
+                "chain": first_chain or "A",
+                "chains": chain_part,
+                "positions": positions,
+                "method": method,
+                "resolution": resolution,
+                "description": f"UniProtKB PDB cross-reference for {uniprot_accession}",
+                "mapped_accessions": uniprot_accession,
+            })
+
+        return pdb_rows
+
+    except Exception:
+        return []
+
+
+@st.cache_data(show_spinner=False)
+def fetch_pdb_for_uniprot(uniprot_accession):
+    """
+    Return the first PDB structure listed directly on the UniProtKB page,
+    plus the first 5 UniProt PDB cross-references for sidebar selection.
+    """
+    pdb_candidates = fetch_uniprot_pdb_crossrefs(uniprot_accession)
+
+    if not pdb_candidates:
+        return {
+            "pdb": "",
+            "chain": "A",
+            "pdb_candidates": [],
+            "label": "No PDB structures were listed on this UniProtKB entry."
+        }
+
+    first = pdb_candidates[0]
+
+    return {
+        "pdb": first["pdb"],
+        "chain": first["chain"],
+        "pdb_candidates": pdb_candidates,
+        "label": (
+            f"First UniProt-listed PDB for {uniprot_accession}: "
+            f"{first['pdb']} chain {first['chain']} | "
+            f"Method: {first['method'] if first['method'] else 'N/A'} | "
+            f"Resolution: {first['resolution'] if first['resolution'] else 'N/A'} | "
+            f"Positions: {first['positions'] if first['positions'] else 'N/A'}"
+        )
+    }
+
+
+# Backward-compatible name used in the rest of the app.
+def fetch_best_pdb_for_uniprot(uniprot_accession, protein_name=""):
+    return fetch_pdb_for_uniprot(uniprot_accession)
+
+
+def get_defaults(virus_name, protein_name):
+    """
+    Automatically map any virus/protein query to:
+    - UniProt accession
+    - best available PDB structure by lowest resolution
+    """
+    try:
+        uniprot_info = fetch_uniprot_accession(virus_name, protein_name)
+        uniprot = uniprot_info.get("accession", "")
+
+        if not uniprot:
+            return {
+                "uniprot": "",
+                "pdb": "",
+                "chain": "A",
+                "label": "No UniProt accession found. Try a more specific virus/protein name."
+            }
+
+        pdb_info = fetch_pdb_for_uniprot(uniprot)
+
+        best_score = ""
+        if uniprot_info.get("candidates"):
+            best_score = f"Match score: {uniprot_info['candidates'][0].get('match_score', 'N/A')}"
+
+        tax_label = ""
+        if uniprot_info.get("tax_id"):
+            tax_label = f"TaxID: {uniprot_info.get('tax_id')} ({uniprot_info.get('taxonomy_name', '')})"
+
+        label_parts = [
+            f"UniProt: {uniprot}",
+            f"Protein: {uniprot_info.get('protein_name', 'N/A') or 'N/A'}",
+            f"Organism: {uniprot_info.get('organism', 'N/A') or 'N/A'}",
+            tax_label,
+            best_score,
+            pdb_info.get("label", "")
+        ]
+
+        return {
+            "uniprot": uniprot,
+            "pdb": pdb_info.get("pdb", ""),
+            "chain": pdb_info.get("chain", "A"),
+            "label": " | ".join([p for p in label_parts if p])
+        }
+
+    except Exception as e:
+        return {
+            "uniprot": "",
+            "pdb": "",
+            "chain": "A",
+            "label": f"Automatic mapping failed: {e}"
+        }
+
+
+def run_auto_database_mapping(virus_name, protein_name):
+    """
+    Resolve virus/protein to best UniProtKB accession, then related PDB.
+    Stores selected mapping in session_state.
+    """
+    uniprot_info = fetch_uniprot_accession(virus_name, protein_name)
+    uniprot = uniprot_info.get("accession", "")
+
+    if not uniprot:
+        return {
+            "success": False,
+            "message": "No UniProtKB accession found. Try a more specific organism/protein name."
+        }
+
+    pdb_info = fetch_pdb_for_uniprot(uniprot)
+
+    st.session_state["mapped_uniprot_accession"] = uniprot
+    st.session_state["mapped_pdb_id"] = pdb_info.get("pdb", "")
+    st.session_state["mapped_pdb_chain"] = pdb_info.get("chain", "A")
+    st.session_state["mapped_uniprot_candidates"] = uniprot_info.get("candidates", [])
+    st.session_state["mapped_pdb_candidates"] = pdb_info.get("pdb_candidates", [])
+    st.session_state["mapped_label"] = (
+        f"UniProtKB: {uniprot} | "
+        f"Protein: {uniprot_info.get('protein_name', 'N/A') or 'N/A'} | "
+        f"Organism: {uniprot_info.get('organism', 'N/A') or 'N/A'} | "
+        f"{pdb_info.get('label', '')}"
+    )
+
+    return {
+        "success": True,
+        "message": st.session_state["mapped_label"]
+    }
+
 
 # top nav and sidebar inputs
 if "current_page" not in st.session_state:
@@ -540,11 +932,126 @@ st.markdown('</div>', unsafe_allow_html=True)
 st.markdown(f'<div class="top-nav-active">{st.session_state["current_page"]}</div>', unsafe_allow_html=True)
 page = st.session_state["current_page"]
 
-st.sidebar.header("Analysis Settings")
+st.sidebar.header("1. Target Protein")
 
 virus = st.sidebar.text_input("Virus / organism", "SARS-CoV-2")
 protein = st.sidebar.text_input("Protein name", "spike")
 email = st.sidebar.text_input("NCBI Entrez email", "youremail@example.com")
+
+st.sidebar.divider()
+st.sidebar.header("2. Automatic Database Mapping")
+st.sidebar.caption(
+    "Searches UniProtKB for the best accession, then reads the first 5 PDB structures listed on that UniProtKB page."
+)
+
+if "mapped_uniprot_accession" not in st.session_state:
+    st.session_state["mapped_uniprot_accession"] = ""
+if "mapped_pdb_id" not in st.session_state:
+    st.session_state["mapped_pdb_id"] = ""
+if "mapped_pdb_chain" not in st.session_state:
+    st.session_state["mapped_pdb_chain"] = "A"
+if "mapped_uniprot_candidates" not in st.session_state:
+    st.session_state["mapped_uniprot_candidates"] = []
+if "mapped_pdb_candidates" not in st.session_state:
+    st.session_state["mapped_pdb_candidates"] = []
+if "mapped_label" not in st.session_state:
+    st.session_state["mapped_label"] = ""
+
+if st.sidebar.button("Find UniProtKB + UniProt PDBs", use_container_width=True):
+    with st.spinner("Searching UniProtKB and RCSB PDB..."):
+        result = run_auto_database_mapping(virus, protein)
+    if result["success"]:
+        st.sidebar.success("Automatic mapping complete.")
+    else:
+        st.sidebar.warning(result["message"])
+
+uniprot_accession = st.session_state.get("mapped_uniprot_accession", "")
+pdb_id = st.session_state.get("mapped_pdb_id", "")
+pdb_chain = st.session_state.get("mapped_pdb_chain", "A")
+
+if st.session_state.get("mapped_label"):
+    st.sidebar.caption(st.session_state["mapped_label"])
+
+uniprot_candidates_info = st.session_state.get("mapped_uniprot_candidates", [])
+if uniprot_candidates_info:
+    candidate_labels = [
+        f"{c.get('accession', '')} | score {c.get('match_score', '')} | {c.get('protein_name', '')} | {c.get('organism', '')}"
+        for c in uniprot_candidates_info[:10]
+    ]
+
+    selected_candidate_label = st.sidebar.selectbox(
+        "UniProtKB candidates",
+        candidate_labels,
+        index=0,
+        help="Choose another accession if the automatic result is not the intended protein."
+    )
+
+    selected_candidate_accession = selected_candidate_label.split("|")[0].strip()
+
+    if selected_candidate_accession and selected_candidate_accession != uniprot_accession:
+        selected_pdb_info = fetch_pdb_for_uniprot(selected_candidate_accession)
+        st.session_state["mapped_uniprot_accession"] = selected_candidate_accession
+        st.session_state["mapped_pdb_id"] = selected_pdb_info.get("pdb", "")
+        st.session_state["mapped_pdb_chain"] = selected_pdb_info.get("chain", "A")
+        st.session_state["mapped_pdb_candidates"] = selected_pdb_info.get("pdb_candidates", [])
+        uniprot_accession = selected_candidate_accession
+        pdb_id = st.session_state["mapped_pdb_id"]
+        pdb_chain = st.session_state["mapped_pdb_chain"]
+
+pdb_candidate_info = st.session_state.get("mapped_pdb_candidates", [])
+if pdb_candidate_info:
+    pdb_labels = [
+        f"{c.get('pdb', '')} | chain {c.get('chain', '')} | chains {c.get('chains', '')} | positions {c.get('positions', '')} | res {c.get('resolution', 'N/A')} | {c.get('method', '')}"
+        for c in pdb_candidate_info
+    ]
+
+    selected_pdb_label = st.sidebar.selectbox(
+        "First 5 PDB structures from UniProt",
+        pdb_labels,
+        index=0,
+        help="These are the first 5 PDB structures listed directly on the selected UniProtKB page. Choose one if you do not want the first structure."
+    )
+
+    selected_parts = [p.strip() for p in selected_pdb_label.split("|")]
+    if selected_parts:
+        pdb_id = selected_parts[0]
+        st.session_state["mapped_pdb_id"] = pdb_id
+
+    if len(selected_parts) > 1 and selected_parts[1].startswith("chain"):
+        pdb_chain = selected_parts[1].replace("chain", "").strip() or "A"
+        st.session_state["mapped_pdb_chain"] = pdb_chain
+
+manual_mapping = st.sidebar.checkbox(
+    "Manual override",
+    value=False,
+    help="Use this only if automatic UniProtKB/PDB mapping is wrong."
+)
+
+if manual_mapping:
+    uniprot_accession = st.sidebar.text_input(
+        "Manual UniProtKB accession",
+        value=uniprot_accession or "P0DTC2"
+    )
+    pdb_id = st.sidebar.text_input(
+        "Manual PDB ID",
+        value=pdb_id or "6VSB"
+    )
+    pdb_chain = st.sidebar.text_input(
+        "Manual PDB chain",
+        value=pdb_chain or "A"
+    )
+
+st.sidebar.markdown("**Current mapping**")
+map_col1, map_col2, map_col3 = st.sidebar.columns(3)
+map_col1.metric("UniProt", uniprot_accession if uniprot_accession else "N/A")
+map_col2.metric("PDB", pdb_id if pdb_id else "N/A")
+map_col3.metric("Chain", pdb_chain if pdb_chain else "N/A")
+
+if not uniprot_accession:
+    st.sidebar.info("Click **Find UniProtKB + UniProt PDBs** before running the analysis.")
+
+st.sidebar.divider()
+st.sidebar.header("3. Analysis Parameters")
 
 max_seqs = st.sidebar.slider("Maximum sequences from NCBI", 20, 500, 100, step=20)
 min_length = st.sidebar.number_input("Minimum sequence length", 50, 2000, 400)
@@ -563,49 +1070,7 @@ coef_hotspot = st.sidebar.slider("Hotspot penalty weight", 0.0, 3.0, 0.5)
 high_score = st.sidebar.slider("High priority threshold", 0.0, 3.0, 1.4)
 medium_score = st.sidebar.slider("Medium priority threshold", 0.0, 3.0, 1.0)
 
-
-st.sidebar.header("Database Mapping")
-
-db_defaults = get_database_defaults(virus, protein)
-
-st.sidebar.caption(f"Suggested mapping: {db_defaults['label']}")
-
-use_manual_mapping = st.sidebar.checkbox(
-    "Manually edit UniProt/PDB IDs",
-    value=False
-)
-
-if use_manual_mapping:
-    uniprot_accession = st.sidebar.text_input(
-        "UniProt accession",
-        value=db_defaults["uniprot"] or "P0DTC2",
-        key="manual_uniprot_accession"
-    )
-    pdb_id = st.sidebar.text_input(
-        "PDB ID",
-        value=db_defaults["pdb"] or "6VSB",
-        key="manual_pdb_id"
-    )
-    pdb_chain = st.sidebar.text_input(
-        "PDB chain",
-        value=db_defaults["chain"] or "A",
-        key="manual_pdb_chain"
-    )
-else:
-    uniprot_accession = db_defaults["uniprot"]
-    pdb_id = db_defaults["pdb"]
-    pdb_chain = db_defaults["chain"]
-
-    col_db1, col_db2, col_db3 = st.sidebar.columns(3)
-    col_db1.metric("UniProt", uniprot_accession if uniprot_accession else "N/A")
-    col_db2.metric("PDB", pdb_id if pdb_id else "N/A")
-    col_db3.metric("Chain", pdb_chain if pdb_chain else "N/A")
-
-    if not uniprot_accession:
-        st.sidebar.warning("No automatic UniProt accession found. Enable manual edit and enter one.")
-    if not pdb_id:
-        st.sidebar.info("No automatic PDB ID found. 3D mapping needs a PDB ID.")
-
+st.sidebar.divider()
 # manual epitope input
 st.sidebar.header("Epitope Regions")
 st.sidebar.write("Format: Type,start,end per line. Example: B,319,541")
@@ -649,7 +1114,7 @@ current_settings = {
     "uniprot_accession": uniprot_accession,
     "pdb_id": pdb_id,
     "pdb_chain": pdb_chain,
-    "use_manual_mapping": use_manual_mapping,
+    "manual_mapping": manual_mapping,
     "epitope_text": epitope_text,
 }
 current_settings_signature = repr(sorted(current_settings.items()))
@@ -1046,14 +1511,142 @@ def plot_candidates(conservation_scores, final_candidates, top_n=10):
 
 
 
-def plot_functional_regions(conservation_scores, final_candidates, features_df, conserved_threshold, hotspot_threshold, top_n=10):
-    """Plot conservation with functional annotations and top candidate regions."""
-    fig, ax = plt.subplots(figsize=(14, 4))
-    ax.plot(conservation_scores, linewidth=1.2, color="#2563eb", label="Conservation score")
-    ax.fill_between(range(len(conservation_scores)), conservation_scores, alpha=0.10, color="#2563eb")
-    ax.axhline(y=conserved_threshold, linestyle="--", linewidth=1.1, color="#16a34a", label="Conserved threshold")
-    ax.axhline(y=hotspot_threshold, linestyle="--", linewidth=1.1, color="#dc2626", label="Hotspot threshold")
-    ax.grid(alpha=0.18)
+def plot_functional_regions(conservation_scores, final_candidates, features_df, conserved_threshold=None, hotspot_threshold=None, top_n=10):
+    """
+    Clean track-style visualization:
+    - Top: conservation curve
+    - Below: horizontal lines per functional category
+    """
+
+    fig, ax = plt.subplots(figsize=(15, 6))
+
+    x = np.arange(len(conservation_scores))
+
+    # ===== 1. Conservation line =====
+    ax.plot(x, conservation_scores, color="#2563eb", linewidth=1.5, label="Conservation")
+
+    # ===== 2. Define functional categories (each gets a track) =====
+    categories = [
+        "Domain",
+        "Binding site",
+        "Glycosylation",
+        "Functional site",
+        "Region",
+        "Membrane/topology",
+        "Disulfide bond"
+    ]
+
+    y_positions = {cat: -(i + 1) * 0.3 for i, cat in enumerate(categories)}
+
+    color_map = {
+        "Domain": "#60a5fa",
+        "Binding site": "#22c55e",
+        "Glycosylation": "#f59e0b",
+        "Functional site": "#ef4444",
+        "Region": "#a78bfa",
+        "Membrane/topology": "#06b6d4",
+        "Disulfide bond": "#ec4899"
+    }
+
+    # ===== 3. Plot horizontal feature lines =====
+    if features_df is not None and not features_df.empty:
+        for _, feat in features_df.iterrows():
+            try:
+                start = int(feat["start"]) - 1
+                end = int(feat["end"])
+            except:
+                continue
+
+            category = classify_functional_feature(
+                feat.get("type", ""),
+                feat.get("description", "")
+            )
+
+            if category not in y_positions:
+                continue
+
+            y = y_positions[category]
+
+            ax.hlines(
+                y=y,
+                xmin=start,
+                xmax=end,
+                colors=color_map.get(category, "gray"),
+                linewidth=4,
+                alpha=0.9
+            )
+
+    # ===== 4. Candidate regions (separate track) =====
+    for _, row in final_candidates.head(top_n).iterrows():
+        start = int(row["start"])
+        end = int(row["end"])
+        rank = int(row["rank"])
+
+        ax.hlines(
+            y=0.2,
+            xmin=start,
+            xmax=end,
+            colors="#f97316",
+            linewidth=5
+        )
+
+        ax.text(
+            (start + end) / 2,
+            0.25,
+            str(rank),
+            ha="center",
+            fontsize=8,
+            color="#7c2d12",
+            fontweight="bold"
+        )
+
+    # ===== 5. Y-axis labels =====
+    yticks = [0] + list(y_positions.values())
+    ylabels = ["Conservation"] + list(y_positions.keys())
+
+    ax.set_yticks(yticks)
+    ax.set_yticklabels(ylabels)
+
+    # ===== 6. Styling =====
+    ax.set_xlabel("Alignment position")
+    ax.set_title("Evidence Map (Track View)")
+    ax.grid(axis="x", alpha=0.2)
+
+    fig.tight_layout()
+    return fig
+
+
+
+def build_interactive_evidence_map(
+    conservation_scores,
+    final_candidates,
+    features_df,
+    conserved_threshold,
+    hotspot_threshold,
+    selected_categories=None,
+    top_n=20
+):
+    """
+    Interactive Plotly evidence map:
+    - Conservation curve with conserved/hotspot thresholds
+    - Candidate track
+    - Functional tracks with hover descriptions from UniProt
+    """
+
+    categories = [
+        "Domain",
+        "Binding site",
+        "Glycosylation",
+        "Functional site",
+        "Region",
+        "Motif",
+        "Membrane/topology",
+        "Disulfide bond",
+        "Other"
+    ]
+
+    if selected_categories is None:
+        selected_categories = categories
 
     color_map = {
         "Domain": "#60a5fa",
@@ -1065,40 +1658,170 @@ def plot_functional_regions(conservation_scores, final_candidates, features_df, 
         "Membrane/topology": "#06b6d4",
         "Disulfide bond": "#ec4899",
         "Other": "#94a3b8",
+        "Candidate": "#f97316",
+        "Conservation": "#2563eb",
+        "Conserved threshold": "#16a34a",
+        "Hotspot threshold": "#dc2626",
     }
 
-    used_labels = set()
+    track_order = ["Conservation", "Candidates"] + list(selected_categories)
+    y_map = {"Conservation": len(track_order) + 1, "Candidates": len(track_order)}
+    for i, cat in enumerate(selected_categories):
+        y_map[cat] = len(selected_categories) - i
+
+    fig = go.Figure()
+
+    x = list(range(len(conservation_scores)))
+    conservation_y = [y_map["Conservation"] + float(score) for score in conservation_scores]
+
+    fig.add_trace(go.Scatter(
+        x=x,
+        y=conservation_y,
+        mode="lines",
+        name="Conservation score",
+        line=dict(color=color_map["Conservation"], width=2.2),
+        hovertemplate="Position: %{x}<br>Conservation score: %{customdata:.3f}<extra></extra>",
+        customdata=conservation_scores
+    ))
+
+    fig.add_trace(go.Scatter(
+        x=[0, len(conservation_scores) - 1],
+        y=[y_map["Conservation"] + conserved_threshold, y_map["Conservation"] + conserved_threshold],
+        mode="lines",
+        name=f"Conserved threshold ({conserved_threshold})",
+        line=dict(color=color_map["Conserved threshold"], width=1.6, dash="dash"),
+        hovertemplate=f"Conserved threshold: {conserved_threshold}<extra></extra>"
+    ))
+
+    fig.add_trace(go.Scatter(
+        x=[0, len(conservation_scores) - 1],
+        y=[y_map["Conservation"] + hotspot_threshold, y_map["Conservation"] + hotspot_threshold],
+        mode="lines",
+        name=f"Hotspot threshold ({hotspot_threshold})",
+        line=dict(color=color_map["Hotspot threshold"], width=1.6, dash="dash"),
+        hovertemplate=f"Hotspot threshold: {hotspot_threshold}<extra></extra>"
+    ))
+
+    if final_candidates is not None and not final_candidates.empty:
+        for _, row in final_candidates.head(top_n).iterrows():
+            start = int(row["start"])
+            end = int(row["end"])
+            rank = int(row["rank"])
+            score = row.get("score", "")
+            priority = row.get("priority", "")
+            functional_fraction = row.get("functional_fraction", 0)
+            notes = row.get("functional_notes", "")
+
+            fig.add_trace(go.Scatter(
+                x=[start, end],
+                y=[y_map["Candidates"], y_map["Candidates"]],
+                mode="lines+markers",
+                name=f"Candidate {rank}",
+                line=dict(color=color_map["Candidate"], width=9),
+                marker=dict(size=9, color=color_map["Candidate"]),
+                customdata=[
+                    [rank, start, end, score, priority, functional_fraction, notes],
+                    [rank, start, end, score, priority, functional_fraction, notes]
+                ],
+                hovertemplate=(
+                    "<b>Candidate Rank %{customdata[0]}</b><br>"
+                    "Region: %{customdata[1]}–%{customdata[2]}<br>"
+                    "Score: %{customdata[3]}<br>"
+                    "Priority: %{customdata[4]}<br>"
+                    "Functional fraction: %{customdata[5]}<br>"
+                    "UniProt notes: %{customdata[6]}<extra></extra>"
+                ),
+                showlegend=False
+            ))
+
+            fig.add_annotation(
+                x=(start + end) / 2,
+                y=y_map["Candidates"] + 0.15,
+                text=str(rank),
+                showarrow=False,
+                font=dict(size=10, color="#7c2d12")
+            )
 
     if features_df is not None and not features_df.empty:
+        used_legend = set()
+
         for _, feat in features_df.iterrows():
             if pd.isna(feat.get("start")) or pd.isna(feat.get("end")):
                 continue
+
             try:
-                fs = int(feat["start"]) - 1
-                fe = int(feat["end"])
+                start = int(feat["start"]) - 1
+                end = int(feat["end"])
             except Exception:
                 continue
 
-            category = classify_functional_feature(feat.get("type", ""), feat.get("description", ""))
-            color = color_map.get(category, "#94a3b8")
-            label = category if category not in used_labels else None
-            ax.axvspan(fs, fe, color=color, alpha=0.16, label=label)
-            used_labels.add(category)
+            ftype = str(feat.get("type", ""))
+            desc = str(feat.get("description", ""))
+            accession = str(feat.get("source_accession", ""))
+            category = classify_functional_feature(ftype, desc)
 
-    for _, row in final_candidates.head(top_n).iterrows():
-        start = int(row["start"])
-        end = int(row["end"])
-        rank = int(row["rank"])
-        ax.axvspan(start, end, color="#f97316", alpha=0.26)
-        ax.text((start + end) / 2, 0.32, str(rank), ha="center", fontsize=8, color="#7c2d12", fontweight="bold")
+            if category not in selected_categories:
+                continue
 
-    ax.set_xlabel("Alignment position")
-    ax.set_ylabel("Conservation score")
-    ax.set_title("Functional Regions + Top Candidate Vaccine Regions")
-    ax.legend(loc="center left", bbox_to_anchor=(1, 0.5), fontsize=8)
-    fig.tight_layout()
+            y = y_map[category]
+            color = color_map.get(category, color_map["Other"])
+            weight = functional_feature_weight(category)
+
+            fig.add_trace(go.Scatter(
+                x=[start, end],
+                y=[y, y],
+                mode="lines",
+                name=category,
+                line=dict(color=color, width=7),
+                customdata=[
+                    [category, ftype, desc, accession, start + 1, end, weight],
+                    [category, ftype, desc, accession, start + 1, end, weight]
+                ],
+                hovertemplate=(
+                    "<b>%{customdata[0]}</b><br>"
+                    "UniProt feature type: %{customdata[1]}<br>"
+                    "Description: %{customdata[2]}<br>"
+                    "Accession: %{customdata[3]}<br>"
+                    "Position: %{customdata[4]}–%{customdata[5]}<br>"
+                    "Functional weight: %{customdata[6]}<extra></extra>"
+                ),
+                showlegend=category not in used_legend
+            ))
+            used_legend.add(category)
+
+    y_tick_vals = [y_map["Conservation"], y_map["Candidates"]] + [y_map[cat] for cat in selected_categories]
+    y_tick_text = ["Conservation", "Candidates"] + list(selected_categories)
+
+    fig.update_layout(
+        title="Interactive Evidence Map: Conservation, Thresholds, Candidates, and Functional Tracks",
+        height=max(560, 100 + 45 * len(track_order)),
+        plot_bgcolor="rgba(255,255,255,0.70)",
+        paper_bgcolor="rgba(255,255,255,0)",
+        hovermode="closest",
+        margin=dict(l=90, r=40, t=70, b=80),
+        xaxis=dict(
+            title="Alignment position",
+            showgrid=True,
+            gridcolor="rgba(148,163,184,0.25)"
+        ),
+        yaxis=dict(
+            tickmode="array",
+            tickvals=y_tick_vals,
+            ticktext=y_tick_text,
+            showgrid=False,
+            zeroline=False,
+            range=[0, y_map["Conservation"] + 1.25]
+        ),
+        legend=dict(
+            orientation="h",
+            yanchor="bottom",
+            y=-0.32,
+            xanchor="center",
+            x=0.5
+        )
+    )
+
     return fig
-
 
 
 def plot_candidate_score_breakdown(final_candidates, top_n=15):
@@ -1748,6 +2471,12 @@ elif page == "Analysis":
     setup_col1.metric("Virus", virus)
     setup_col2.metric("Protein", protein)
     setup_col3.metric("UniProt", uniprot_accession if uniprot_accession else "N/A")
+    if not uniprot_accession:
+        st.warning("No UniProtKB accession selected. Functional annotation and PDB mapping will be skipped unless you run automatic mapping or enter one manually.")
+    if not pdb_id:
+        st.info("No PDB ID selected. 3D visualization will be skipped unless automatic mapping finds a structure or you enter one manually.")
+    if pdb_id:
+        st.caption(f"Selected PDB: {pdb_id} | Chain: {pdb_chain}")
     if st.session_state.get("analysis_done", False) and settings_changed:
         st.warning("Settings changed. Results are outdated. Run analysis again to refresh plots, table, and UniProt functional regions.")
         if not auto_run_on_change:
@@ -1867,16 +2596,70 @@ elif page == "Analysis":
 
         if result_view == "Overview":
             st.markdown('<div class="section-card">', unsafe_allow_html=True)
-            st.subheader("Evidence Map")
-            st.markdown('<div class="viz-caption">Conservation scores, candidate windows, and UniProt functional regions are shown together to make the biological evidence easier to interpret.</div>', unsafe_allow_html=True)
-            st.pyplot(plot_functional_regions(
+            st.subheader("Interactive Evidence Map")
+            st.markdown(
+                '<div class="viz-caption">Hover over tracks to inspect UniProt annotations, conservation scores, thresholds, and candidate details. Use the filter below to toggle functional tracks.</div>',
+                unsafe_allow_html=True
+            )
+
+            all_functional_categories = [
+                "Domain",
+                "Binding site",
+                "Glycosylation",
+                "Functional site",
+                "Region",
+                "Motif",
+                "Membrane/topology",
+                "Disulfide bond",
+                "Other"
+            ]
+
+            selected_functional_categories = st.multiselect(
+                "Toggle functional tracks",
+                all_functional_categories,
+                default=[
+                    "Domain",
+                    "Binding site",
+                    "Glycosylation",
+                    "Functional site",
+                    "Region",
+                    "Motif"
+                ],
+                key="overview_functional_track_filter"
+            )
+
+            evidence_fig = build_interactive_evidence_map(
                 conservation_scores,
                 final_candidates,
                 features_df,
                 conserved_threshold,
                 hotspot_threshold,
-                top_n=10
-            ))
+                selected_categories=selected_functional_categories,
+                top_n=20
+            )
+
+            try:
+                evidence_event = st.plotly_chart(
+                    evidence_fig,
+                    use_container_width=True,
+                    key="interactive_evidence_map",
+                    on_select="rerun",
+                    selection_mode="points"
+                )
+
+                if evidence_event and hasattr(evidence_event, "selection"):
+                    points = evidence_event.selection.get("points", [])
+                    if points:
+                        customdata = points[0].get("customdata")
+                        if customdata and len(customdata) >= 1:
+                            clicked_rank = int(customdata[0])
+                            if clicked_rank in final_candidates["rank"].astype(int).tolist():
+                                st.session_state["selected_3d_candidate"] = clicked_rank
+                                st.success(f"Selected candidate rank {clicked_rank}. Open the 3D Structure section to view it.")
+            except TypeError:
+                st.plotly_chart(evidence_fig, use_container_width=True, key="interactive_evidence_map")
+
+            st.caption("Click-selection requires a recent Streamlit version. If it does not update the 3D candidate, use the 3D dropdown selector.")
 
             viz_col1, viz_col2 = st.columns([1, 1])
             with viz_col1:
@@ -1947,15 +2730,44 @@ elif page == "Analysis":
 
                         st.markdown("</div>", unsafe_allow_html=True)
 
-                    st.subheader("Functional Regions on Conservation Plot")
-                    st.pyplot(plot_functional_regions(
-                        conservation_scores,
-                        final_candidates,
-                        features_df,
-                        conserved_threshold,
-                        hotspot_threshold,
-                        top_n=10
-                    ))
+                    st.subheader("Interactive Functional Evidence Map")
+                    selected_functional_categories_fa = st.multiselect(
+                        "Toggle functional tracks in annotation view",
+                        [
+                            "Domain",
+                            "Binding site",
+                            "Glycosylation",
+                            "Functional site",
+                            "Region",
+                            "Motif",
+                            "Membrane/topology",
+                            "Disulfide bond",
+                            "Other"
+                        ],
+                        default=[
+                            "Domain",
+                            "Binding site",
+                            "Glycosylation",
+                            "Functional site",
+                            "Region",
+                            "Motif"
+                        ],
+                        key="functional_annotation_track_filter"
+                    )
+
+                    st.plotly_chart(
+                        build_interactive_evidence_map(
+                            conservation_scores,
+                            final_candidates,
+                            features_df,
+                            conserved_threshold,
+                            hotspot_threshold,
+                            selected_categories=selected_functional_categories_fa,
+                            top_n=20
+                        ),
+                        use_container_width=True,
+                        key="functional_annotation_evidence_map"
+                    )
             else:
                 st.info("No UniProt accession is available. Enable manual database mapping in the sidebar and enter a UniProt accession.")
             st.markdown('</div>', unsafe_allow_html=True)
@@ -1983,9 +2795,16 @@ elif page == "Analysis":
                 st.warning("No candidates available.")
             else:
                 top_3d_candidates = final_candidates.head(20)
+                available_3d_ranks = top_3d_candidates["rank"].astype(int).tolist()
+                if (
+                    "selected_3d_candidate" in st.session_state
+                    and st.session_state["selected_3d_candidate"] not in available_3d_ranks
+                ):
+                    st.session_state["selected_3d_candidate"] = available_3d_ranks[0]
+
                 selected_rank = st.selectbox(
                     "Choose candidate rank to highlight (top 20 only)",
-                    top_3d_candidates["rank"].astype(int).tolist(),
+                    available_3d_ranks,
                     key="selected_3d_candidate"
                 )
 
