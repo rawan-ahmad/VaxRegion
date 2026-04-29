@@ -26,7 +26,12 @@ except Exception:
     HAS_3D = False
 
 # config
-st.set_page_config(page_title="Vaccine Target Prioritization Tool", layout="wide", page_icon="🧬")
+st.set_page_config(
+    page_title="Vaccine Target Prioritization Tool",
+    layout="wide",
+    page_icon="🧬",
+    initial_sidebar_state="expanded"
+)
 
 # styling
 st.markdown("""
@@ -481,7 +486,21 @@ st.markdown("""
 </div>
 """, unsafe_allow_html=True)
 
+st.markdown("""
+<style>
+#MainMenu {
+    visibility: hidden;
+}
 
+footer {
+    visibility: hidden;
+}
+
+[data-testid="stDecoration"] {
+    display: none !important;
+}
+</style>
+""", unsafe_allow_html=True)
 
 ## Part 2: database mapping and functions
 # automatic database mapping: virus and protein -> uniprot -> related pdb structures
