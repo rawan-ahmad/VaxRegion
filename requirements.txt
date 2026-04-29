@@ -9,3 +9,5 @@ scikit-learn
 py3Dmol
 stmol
 openai
+ipywidgets
+ipython-genutils
