@@ -1,3 +1,5 @@
+## Part 1: setting up imports and styling
+# imports
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -11,12 +13,10 @@ import subprocess
 import requests
 import tempfile
 from collections import Counter
-
-
 from Bio import Entrez, SeqIO, AlignIO, pairwise2
 from Bio.PDB import MMCIFParser, is_aa
 
-
+# 3d visualization libraries
 # pip install py3Dmol stmol
 try:
     import py3Dmol
@@ -25,11 +25,8 @@ try:
 except Exception:
     HAS_3D = False
 
-st.set_page_config(
-    page_title="Vaccine Target Prioritization Tool",
-    layout="wide",
-    page_icon="🧬"
-)
+# config
+st.set_page_config(page_title="Vaccine Target Prioritization Tool", layout="wide", page_icon="🧬")
 
 # styling
 st.markdown("""
@@ -472,9 +469,9 @@ st.markdown("""
 <div class="fun-hero-card">
     <div class="fun-hero-title">VaxRegion Lab</div>
     <div class="fun-hero-subtitle">
-        An interactive bioinformatics research dashboard for discovering promising vaccine target regions.
+        An interactive bioinformatics research dashboard for discovering vaccine target regions.
         It combines evolutionary conservation, epitope evidence, UniProt functional annotation, PDB structure mapping,
-        amino-acid composition, PubMed evidence, and AI-assisted literature synthesis.
+        amino acid composition, PubMed evidence, and AI assisted literature summaries.
     </div>
     <span class="fun-chip">Evolutionary Conservation</span>
     <span class="fun-chip">Epitope Evidence</span>
@@ -485,76 +482,64 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 
-# Automatic database mapping: virus/protein -> UniProt -> related PDB structure
+
+## Part 2: database mapping and functions
+# automatic database mapping: virus and protein -> uniprot -> related pdb structures
 @st.cache_data(show_spinner=False)
-def fetch_taxonomy_id(virus_name):
-    """
-    Search UniProt Taxonomy to resolve a virus/organism name to a TaxID.
-    This improves UniProt search precision compared with free-text organism names.
-    """
+def get_taxonomyID(virus_name):
+    # searching uniprot taxonomy to resolve a virus/organism name to a taxID
     virus_name = virus_name.strip()
-    if not virus_name:
+    if not virus_name: # empty input
         return {"tax_id": "", "scientific_name": ""}
 
     url = "https://rest.uniprot.org/taxonomy/search"
-    params = {
-        "query": virus_name,
-        "format": "json",
-        "size": 5
-    }
+    params = {"query": virus_name, "format": "json", "size": 5}
 
     try:
         r = requests.get(url, params=params, timeout=20)
-        if r.status_code != 200:
+        if r.status_code != 200: # api fails
             return {"tax_id": "", "scientific_name": ""}
 
         results = r.json().get("results", [])
         if not results:
             return {"tax_id": "", "scientific_name": ""}
 
-        # Prefer exact or near-exact scientific/common name match.
+        # prefer exact or near exact scientific name match
         query_low = virus_name.lower()
         best = results[0]
-        for item in results:
+        for item in results: # get best match
             scientific = str(item.get("scientificName", "")).lower()
             common = str(item.get("commonName", "")).lower()
             if query_low == scientific or query_low == common or query_low in scientific:
                 best = item
                 break
 
-        return {
-            "tax_id": str(best.get("taxonId", "")),
-            "scientific_name": best.get("scientificName", virus_name)
-        }
+        return {"tax_id": str(best.get("taxonId", "")), "scientific_name": best.get("scientificName", virus_name)}
 
     except Exception:
         return {"tax_id": "", "scientific_name": ""}
 
-
+# search uniprot for best matching accessions using organism name or taxID then score and rank candidates
 @st.cache_data(show_spinner=False)
-def search_uniprot_candidates(virus_name, protein_name, size=15):
-    """
-    Search UniProt using TaxID when possible, then return multiple ranked candidates.
-    This avoids blindly taking the first broad result.
-    """
+def search_uniprot(virus_name, protein_name, size=15):
     virus_name = virus_name.strip()
     protein_name = protein_name.strip()
 
-    if not virus_name or not protein_name:
+    if not virus_name or not protein_name: # empty input
         return []
 
-    tax_info = fetch_taxonomy_id(virus_name)
+    tax_info = get_taxonomyID(virus_name)
     tax_id = tax_info.get("tax_id", "")
     scientific_name = tax_info.get("scientific_name", "")
 
-    if tax_id:
-        organism_filter = f"organism_id:{tax_id}"
+    if tax_id: 
+        organism_filter = f"organism_id:{tax_id}" # search via taxID when possible
     else:
         organism_filter = f'organism_name:"{virus_name}"'
 
     url = "https://rest.uniprot.org/uniprotkb/search"
 
-    queries = [
+    queries = [ # multiple queries
         f'({protein_name}) AND {organism_filter} AND reviewed:true',
         f'({protein_name}) AND {organism_filter}',
         f'({protein_name}) AND ({virus_name}) AND reviewed:true',
@@ -562,24 +547,19 @@ def search_uniprot_candidates(virus_name, protein_name, size=15):
     ]
 
     collected = []
-    seen = set()
+    seen = set() # avoid duplicates
 
     for query in queries:
-        params = {
-            "query": query,
-            "format": "json",
-            "size": size,
-            "fields": "accession,reviewed,protein_name,gene_names,organism_name,length"
-        }
+        params = {"query": query, "format": "json", "size": size, "fields": "accession,reviewed,protein_name,gene_names,organism_name,length"}
 
         try:
             r = requests.get(url, params=params, timeout=20)
-            if r.status_code != 200:
+            if r.status_code != 200: # fails -> skip to next query
                 continue
 
             for result in r.json().get("results", []):
                 accession = result.get("primaryAccession", "")
-                if not accession or accession in seen:
+                if not accession or accession in seen: # avoid dups
                     continue
 
                 protein_desc = result.get("proteinDescription", {})
@@ -597,13 +577,13 @@ def search_uniprot_candidates(virus_name, protein_name, size=15):
                         alternative_names.append(alt_name)
 
                 protein_full_name = recommended or submission_name or ""
-                all_names = " | ".join([protein_full_name] + alternative_names)
+                all_names = " | ".join([protein_full_name] + alternative_names) # combine all names for better matching
 
                 organism = result.get("organism", {}).get("scientificName", "")
                 reviewed = result.get("entryType", "")
                 length = result.get("sequence", {}).get("length", None)
 
-                collected.append({
+                collected.append({ # store info
                     "accession": accession,
                     "protein_name": protein_full_name,
                     "all_names": all_names,
@@ -620,12 +600,8 @@ def search_uniprot_candidates(virus_name, protein_name, size=15):
 
     return collected
 
-
-def score_uniprot_candidate(candidate, virus_name, protein_name):
-    """
-    Score UniProt relevance using TaxID/organism match, protein-name match,
-    reviewed status, and penalties for broad or low-quality matches.
-    """
+# score uniprot cands according to their info and relevance to query
+def score_uniprot_cand(candidate, virus_name, protein_name):
     score = 0
     protein_query = protein_name.lower().strip()
     virus_query = virus_name.lower().strip()
@@ -639,18 +615,18 @@ def score_uniprot_candidate(candidate, virus_name, protein_name):
     protein_terms = [t for t in re.split(r"[\s/_-]+", protein_query) if len(t) > 1]
     virus_terms = [t for t in re.split(r"[\s/_-]+", virus_query) if len(t) > 1]
 
-    # Organism matching
+    # organism matching
     if virus_query and virus_query in candidate_organism:
         score += 8
     else:
         score += sum(1 for t in virus_terms if t in candidate_organism)
 
-    # Protein matching
+    # protein matching
     if protein_query and protein_query in candidate_all_names:
         score += 10
     score += 2 * sum(1 for t in protein_terms if t in candidate_all_names)
 
-    # Reviewed Swiss-Prot entries are usually better curated.
+    # reviewed swiss prot entries -> better curated
     if "reviewed" in reviewed:
         score += 5
 
@@ -671,7 +647,7 @@ def score_uniprot_candidate(candidate, virus_name, protein_name):
         if key in protein_query and any(s in candidate_all_names for s in synonyms):
             score += 6
 
-    # Penalties
+    # penalties
     if "polyprotein" in candidate_all_names and "polyprotein" not in protein_query:
         score -= 6
     if "fragment" in candidate_all_names:
@@ -679,7 +655,7 @@ def score_uniprot_candidate(candidate, virus_name, protein_name):
     if "uncharacterized" in candidate_all_names:
         score -= 5
 
-    # Prefer full proteins, but avoid gigantic polyproteins unless requested.
+    # prefer full proteins but avoid gigantic polyproteins 
     try:
         if length is not None and int(length) > 2500 and "polyprotein" not in protein_query:
             score -= 3
@@ -688,13 +664,10 @@ def score_uniprot_candidate(candidate, virus_name, protein_name):
 
     return score
 
-
+# getting highest scoring uniprot accession and the ranked candidate list for sidebar display
 @st.cache_data(show_spinner=False)
-def fetch_uniprot_accession(virus_name, protein_name):
-    """
-    Return the highest-scoring UniProt accession and the ranked candidate list.
-    """
-    candidates = search_uniprot_candidates(virus_name, protein_name, size=15)
+def get_uniprot_accession(virus_name, protein_name):
+    candidates = search_uniprot(virus_name, protein_name, size=15)
 
     if not candidates:
         return {
@@ -709,7 +682,7 @@ def fetch_uniprot_accession(virus_name, protein_name):
     scored = []
     for candidate in candidates:
         c = dict(candidate)
-        c["match_score"] = score_uniprot_candidate(c, virus_name, protein_name)
+        c["match_score"] = score_uniprot_cand(c, virus_name, protein_name)
         scored.append(c)
 
     scored = sorted(scored, key=lambda x: x["match_score"], reverse=True)
@@ -724,15 +697,9 @@ def fetch_uniprot_accession(virus_name, protein_name):
         "candidates": scored
     }
 
-
+# reading the PDB structures directly from the uniprotkb entry page
 @st.cache_data(show_spinner=False)
-def fetch_uniprot_pdb_crossrefs(uniprot_accession, max_structures=5):
-    """
-    Read the PDB structures directly from the UniProtKB entry page.
-
-    This matches the UniProt '3D structure databases' table:
-    PDB entry, method, resolution, chains/positions.
-    """
+def get_crossrefs(uniprot_accession, max_structures=5):
     if not uniprot_accession:
         return []
 
@@ -758,7 +725,7 @@ def fetch_uniprot_pdb_crossrefs(uniprot_accession, max_structures=5):
             resolution = props.get("Resolution", "")
             chains = props.get("Chains", "")
 
-            # Examples:
+            # ex:
             # "A/B/C=1-1208"
             # "A=319-541"
             chain_part = chains.split("=")[0].strip() if chains else "A"
@@ -781,14 +748,10 @@ def fetch_uniprot_pdb_crossrefs(uniprot_accession, max_structures=5):
     except Exception:
         return []
 
-
+# get first PDB structure listed and the other crossref for sidebar selection
 @st.cache_data(show_spinner=False)
-def fetch_pdb_for_uniprot(uniprot_accession):
-    """
-    Return the first PDB structure listed directly on the UniProtKB page,
-    plus the first 5 UniProt PDB cross-references for sidebar selection.
-    """
-    pdb_candidates = fetch_uniprot_pdb_crossrefs(uniprot_accession)
+def get_pdb_cand(uniprot_accession):
+    pdb_candidates = get_crossrefs(uniprot_accession)
 
     if not pdb_candidates:
         return {
@@ -813,31 +776,20 @@ def fetch_pdb_for_uniprot(uniprot_accession):
         )
     }
 
+# wrapper
+def get_best_pdb_for_uniprot(uniprot_accession, protein_name=""):
+    return get_pdb_cand(uniprot_accession)
 
-# Backward-compatible name used in the rest of the app.
-def fetch_best_pdb_for_uniprot(uniprot_accession, protein_name=""):
-    return fetch_pdb_for_uniprot(uniprot_accession)
-
-
+# automatically map any virus - protein query to uniprot accession and best available PDB structure
 def get_defaults(virus_name, protein_name):
-    """
-    Automatically map any virus/protein query to:
-    - UniProt accession
-    - best available PDB structure by lowest resolution
-    """
     try:
-        uniprot_info = fetch_uniprot_accession(virus_name, protein_name)
+        uniprot_info = get_uniprot_accession(virus_name, protein_name)
         uniprot = uniprot_info.get("accession", "")
 
         if not uniprot:
-            return {
-                "uniprot": "",
-                "pdb": "",
-                "chain": "A",
-                "label": "No UniProt accession found. Try a more specific virus/protein name."
-            }
+            return {"uniprot": "", "pdb": "", "chain": "A", "label": "No UniProt accession found. Try a more specific virus/protein name."}
 
-        pdb_info = fetch_pdb_for_uniprot(uniprot)
+        pdb_info = get_pdb_cand(uniprot)
 
         best_score = ""
         if uniprot_info.get("candidates"):
@@ -871,13 +823,9 @@ def get_defaults(virus_name, protein_name):
             "label": f"Automatic mapping failed: {e}"
         }
 
-
-def run_auto_database_mapping(virus_name, protein_name):
-    """
-    Resolve virus/protein to best UniProtKB accession, then related PDB.
-    Stores selected mapping in session_state.
-    """
-    uniprot_info = fetch_uniprot_accession(virus_name, protein_name)
+# resolving virus - protein to best mapping and store in session_state
+def auto_db_mapping(virus_name, protein_name):
+    uniprot_info = get_uniprot_accession(virus_name, protein_name)
     uniprot = uniprot_info.get("accession", "")
 
     if not uniprot:
@@ -886,7 +834,7 @@ def run_auto_database_mapping(virus_name, protein_name):
             "message": "No UniProtKB accession found. Try a more specific organism/protein name."
         }
 
-    pdb_info = fetch_pdb_for_uniprot(uniprot)
+    pdb_info = get_pdb_cand(uniprot)
 
     st.session_state["mapped_uniprot_accession"] = uniprot
     st.session_state["mapped_pdb_id"] = pdb_info.get("pdb", "")
@@ -900,12 +848,11 @@ def run_auto_database_mapping(virus_name, protein_name):
         f"{pdb_info.get('label', '')}"
     )
 
-    return {
-        "success": True,
-        "message": st.session_state["mapped_label"]
-    }
+    return {"success": True, "message": st.session_state["mapped_label"]}
 
 
+
+# Part 3: UI inputs and state management
 # top nav and sidebar inputs
 if "current_page" not in st.session_state:
     st.session_state["current_page"] = "Home"
@@ -940,9 +887,7 @@ email = st.sidebar.text_input("NCBI Entrez email", "youremail@example.com")
 
 st.sidebar.divider()
 st.sidebar.header("2. Automatic Database Mapping")
-st.sidebar.caption(
-    "Searches UniProtKB for the best accession, then reads the first 5 PDB structures listed on that UniProtKB page."
-)
+st.sidebar.caption("Searches UniProtKB for the best accession, then reads the PDB structures listed on that UniProtKB page.")
 
 if "mapped_uniprot_accession" not in st.session_state:
     st.session_state["mapped_uniprot_accession"] = ""
@@ -957,9 +902,9 @@ if "mapped_pdb_candidates" not in st.session_state:
 if "mapped_label" not in st.session_state:
     st.session_state["mapped_label"] = ""
 
-if st.sidebar.button("Find UniProtKB + UniProt PDBs", use_container_width=True):
-    with st.spinner("Searching UniProtKB and RCSB PDB..."):
-        result = run_auto_database_mapping(virus, protein)
+if st.sidebar.button("Find UniProt & PDBs", use_container_width=True):
+    with st.spinner("Searching UniProtKB and PDB..."):
+        result = auto_db_mapping(virus, protein)
     if result["success"]:
         st.sidebar.success("Automatic mapping complete.")
     else:
@@ -989,7 +934,7 @@ if uniprot_candidates_info:
     selected_candidate_accession = selected_candidate_label.split("|")[0].strip()
 
     if selected_candidate_accession and selected_candidate_accession != uniprot_accession:
-        selected_pdb_info = fetch_pdb_for_uniprot(selected_candidate_accession)
+        selected_pdb_info = get_pdb_cand(selected_candidate_accession)
         st.session_state["mapped_uniprot_accession"] = selected_candidate_accession
         st.session_state["mapped_pdb_id"] = selected_pdb_info.get("pdb", "")
         st.session_state["mapped_pdb_chain"] = selected_pdb_info.get("chain", "A")
@@ -1005,12 +950,7 @@ if pdb_candidate_info:
         for c in pdb_candidate_info
     ]
 
-    selected_pdb_label = st.sidebar.selectbox(
-        "First 5 PDB structures from UniProt",
-        pdb_labels,
-        index=0,
-        help="These are the first 5 PDB structures listed directly on the selected UniProtKB page. Choose one if you do not want the first structure."
-    )
+    selected_pdb_label = st.sidebar.selectbox("PDB structures from UniProt", pdb_labels, index=0, help="These are the PDB structures listed directly on the selected UniProtKB page. Choose one if you do not want the first structure.")
 
     selected_parts = [p.strip() for p in selected_pdb_label.split("|")]
     if selected_parts:
@@ -1021,11 +961,7 @@ if pdb_candidate_info:
         pdb_chain = selected_parts[1].replace("chain", "").strip() or "A"
         st.session_state["mapped_pdb_chain"] = pdb_chain
 
-manual_mapping = st.sidebar.checkbox(
-    "Manual override",
-    value=False,
-    help="Use this only if automatic UniProtKB/PDB mapping is wrong."
-)
+manual_mapping = st.sidebar.checkbox("Manual override", value=False, help="Use this if automatic UniProtKB - PDB mapping is wrong.")
 
 if manual_mapping:
     uniprot_accession = st.sidebar.text_input(
@@ -1034,7 +970,7 @@ if manual_mapping:
     )
     pdb_id = st.sidebar.text_input(
         "Manual PDB ID",
-        value=pdb_id or "6VSB"
+        value=pdb_id or "6VXX"
     )
     pdb_chain = st.sidebar.text_input(
         "Manual PDB chain",
@@ -1048,7 +984,7 @@ map_col2.metric("PDB", pdb_id if pdb_id else "N/A")
 map_col3.metric("Chain", pdb_chain if pdb_chain else "N/A")
 
 if not uniprot_accession:
-    st.sidebar.info("Click **Find UniProtKB + UniProt PDBs** before running the analysis.")
+    st.sidebar.info("Click **Find UniProt & PDBs** before running the analysis.")
 
 st.sidebar.divider()
 st.sidebar.header("3. Analysis Parameters")
@@ -1085,16 +1021,15 @@ T,1130,1160"""
 epitope_text = st.sidebar.text_area("Known epitopes", default_epitopes, height=180)
 
 st.sidebar.header("Run Behavior")
-auto_run_on_change = st.sidebar.checkbox("Auto-run analysis when settings change", value=True)
+auto_run_on_change = st.sidebar.checkbox("Autorun analysis when settings change", value=True)
 st.sidebar.caption("Turn off if runs become slow because of NCBI, MUSCLE.")
-if st.sidebar.button("Clear cached data / reset results"):
+if st.sidebar.button("Clear data and results"):
     st.cache_data.clear()
     st.session_state["analysis_done"] = False
     st.session_state["last_run_signature"] = None
     st.rerun()
 
-
-# Track sidebar settings so changing virus/protein/coefs triggers fresh results
+# track sidebar settings so any change triggers fresh results
 current_settings = {
     "virus": virus,
     "protein": protein,
@@ -1121,7 +1056,10 @@ current_settings_signature = repr(sorted(current_settings.items()))
 last_run_signature = st.session_state.get("last_run_signature")
 settings_changed = current_settings_signature != last_run_signature
 
-# helper functions
+
+
+## Part 4: analysis functions
+# parse epitope input into list of (type, start, end) tuples
 def parse_epitopes(text):
     epitopes = []
     for line in text.strip().splitlines():
@@ -1134,14 +1072,13 @@ def parse_epitopes(text):
                 pass
     return epitopes
 
-
-def safe_file_slug(*parts):
-    """Create a safe filename slug so sequence/alignment files are unique per run."""
+# create a filename slug so sequence and alignment files are unique per run
+def file_slug(*parts):
     text = "_".join(str(p) for p in parts)
     text = re.sub(r"[^A-Za-z0-9_.-]+", "_", text)
     return text.strip("_")[:120] or "analysis"
 
-
+# fetch sequences from NCBI based on virus and protein query filter by length and deduplicate then save to fasta file
 @st.cache_data(show_spinner=False)
 def fetch_sequences(virus, protein, email, max_seqs, min_length):
     Entrez.email = email
@@ -1160,9 +1097,9 @@ def fetch_sequences(virus, protein, email, max_seqs, min_length):
     fasta_data = handle.read()
     handle.close()
 
-    file_slug = safe_file_slug(virus, protein, max_seqs, min_length)
-    raw_path = f"sequences_raw_{file_slug}.fasta"
-    clean_path = f"sequences_{file_slug}.fasta"
+    slug = file_slug(virus, protein, max_seqs, min_length)
+    raw_path = f"sequences_raw_{slug}.fasta"
+    clean_path = f"sequences_{slug}.fasta"
 
     with open(raw_path, "w") as f:
         f.write(fasta_data)
@@ -1180,13 +1117,12 @@ def fetch_sequences(virus, protein, email, max_seqs, min_length):
     SeqIO.write(filtered, clean_path, "fasta")
     return clean_path, len(ids), len(filtered)
 
-
+# run muscle to get MSA and read alignment
 def run_muscle(input_fasta):
-    aligned_fasta = f"aligned_{safe_file_slug(input_fasta)}.fasta"
-
-    # this assumes MUSCLE is installed locally
-    # Mac: conda install -c bioconda muscle
-    # Linux: sudo apt-get install muscle
+    aligned_fasta = f"aligned_{file_slug(input_fasta)}.fasta"
+    # this assumes muscle is installed locally
+    # mac: conda install -c bioconda muscle
+    # linux: sudo apt-get install muscle
     result = subprocess.run(
     ["muscle", "-align", input_fasta, "-output", aligned_fasta],
     capture_output=True,
@@ -1199,6 +1135,7 @@ def run_muscle(input_fasta):
     alignment = AlignIO.read(aligned_fasta, "fasta")
     return aligned_fasta, alignment
 
+# compute conservation scores per position using Shannon entropy
 def compute_conservation(alignment):
     conservation_scores = []
     H_max = math.log2(20)
@@ -1218,6 +1155,7 @@ def compute_conservation(alignment):
 
     return np.array(conservation_scores)
 
+# regions instead of individual positions for better visualization and to match epitopes and functional features which are often regional
 def group_regions(positions):
     regions = []
     if not positions:
@@ -1237,7 +1175,7 @@ def group_regions(positions):
     regions.append((start, end))
     return regions
 
-
+# create a map of epitope types per position
 def build_epitope_map(epitopes, aln_len):
     epitope_map = [""] * aln_len
 
@@ -1250,11 +1188,8 @@ def build_epitope_map(epitopes, aln_len):
 
     return epitope_map
 
-
-
-
+# classifying uniprot feature into interpretable functional categories
 def classify_functional_feature(feature_type, description=""):
-    """Classify UniProt feature into interpretable functional categories."""
     text = f"{feature_type} {description}".lower()
 
     if "glycosyl" in text or "glycan" in text:
@@ -1275,9 +1210,8 @@ def classify_functional_feature(feature_type, description=""):
         return "Region"
     return "Other"
 
-
-def functional_feature_weight(category):
-    """Assign biological importance weights to functional feature categories."""
+# assigning biological importance weights to functional feature categories
+def functional_weight(category):
     weights = {
         "Binding site": 1.00,
         "Functional site": 0.95,
@@ -1291,9 +1225,8 @@ def functional_feature_weight(category):
     }
     return weights.get(category, 0.35)
 
-
+# CSS class for visual color coding
 def functional_category_class(category):
-    """CSS class for visual color coding."""
     mapping = {
         "Domain": "func-domain",
         "Binding site": "func-binding",
@@ -1307,9 +1240,8 @@ def functional_category_class(category):
     }
     return mapping.get(category, "func-other")
 
-
+# creating a weighted functional map from uniprot annotations
 def build_functional_map(features_df, aln_len):
-    """Create a weighted functional map from UniProt annotations."""
     functional_map = [0.0] * aln_len
 
     if features_df is None or features_df.empty:
@@ -1326,9 +1258,9 @@ def build_functional_map(features_df, aln_len):
             continue
 
         category = classify_functional_feature(feat.get("type", ""), feat.get("description", ""))
-        weight = functional_feature_weight(category)
+        weight = functional_weight(category)
 
-        # UniProt positions are usually 1-based; windows are 0-based.
+        # uniprot positions are usually 1-based; windows are 0-based.
         start0 = max(start - 1, 0)
         end0 = min(end, aln_len)
 
@@ -1337,9 +1269,8 @@ def build_functional_map(features_df, aln_len):
 
     return functional_map
 
-
+# color coded and plain functional notes without creating a binary overlap feature
 def add_functional_notes(final_candidates, features_df):
-    """Add color-coded and plain functional notes without creating a binary overlap feature."""
     if features_df is None or features_df.empty:
         final_candidates["functional_notes"] = ""
         return final_candidates
@@ -1378,9 +1309,8 @@ def add_functional_notes(final_candidates, features_df):
     final_candidates["functional_notes"] = plain_notes
     return final_candidates
 
-
-def summarize_functional_feature_types(features_df):
-    """Return a summary table of UniProt feature categories and scoring weights."""
+# a summary table of uniprot feature categories and scoring weights
+def summary_table(features_df):
     if features_df is None or features_df.empty:
         return pd.DataFrame()
 
@@ -1390,7 +1320,7 @@ def summarize_functional_feature_types(features_df):
         rows.append({
             "Feature type": feat.get("type", ""),
             "Category": category,
-            "Weight used in scoring": functional_feature_weight(category),
+            "Weight used in scoring": functional_weight(category),
             "Start": feat.get("start", ""),
             "End": feat.get("end", ""),
             "Description": feat.get("description", "")
@@ -1398,19 +1328,8 @@ def summarize_functional_feature_types(features_df):
 
     return pd.DataFrame(rows)
 
-
-def score_windows(
-    conservation_scores,
-    epitope_map,
-    functional_map,
-    window_size,
-    window_step,
-    hotspot_threshold,
-    coef_cons,
-    coef_epitope,
-    coef_functional,
-    coef_hotspot
-):
+# scoring windows based on conservation, epitope presence, functional importance, and hotspot penalty
+def score_windows(conservation_scores, epitope_map, functional_map, window_size, window_step, hotspot_threshold, coef_cons, coef_epitope, coef_functional, coef_hotspot):
     aln_len = len(conservation_scores)
     windows = []
 
@@ -1449,7 +1368,7 @@ def score_windows(
 
     return pd.DataFrame(windows)
 
-
+# assign priority labels based on score thresholds
 def assign_priority(score, high_score, medium_score):
     if score >= high_score:
         return "High"
@@ -1458,7 +1377,7 @@ def assign_priority(score, high_score, medium_score):
     else:
         return "Low"
 
-
+# remove windows that are mostly overlapping
 def remove_redundant_windows(ranked_df):
     selected = []
     covered = set()
@@ -1475,7 +1394,7 @@ def remove_redundant_windows(ranked_df):
     final_candidates["rank"] = final_candidates.index + 1
     return final_candidates
 
-
+# visualization functions
 def plot_conservation(conservation_scores, conserved_threshold, hotspot_threshold):
     fig, ax = plt.subplots(figsize=(14, 4))
     ax.plot(conservation_scores, linewidth=1.2, color="#2563eb", label="Conservation score")
@@ -1488,7 +1407,6 @@ def plot_conservation(conservation_scores, conserved_threshold, hotspot_threshol
     ax.set_title("Conservation Analysis")
     ax.legend()
     return fig
-
 
 def plot_candidates(conservation_scores, final_candidates, top_n=10):
     fig, ax = plt.subplots(figsize=(14, 4))
@@ -1509,46 +1427,22 @@ def plot_candidates(conservation_scores, final_candidates, top_n=10):
     ax.set_title(f"Top {top_n} Candidate Regions")
     return fig
 
-
-
-def plot_functional_regions(conservation_scores, final_candidates, features_df, conserved_threshold=None, hotspot_threshold=None, top_n=10):
-    """
-    Clean track-style visualization:
-    - Top: conservation curve
-    - Below: horizontal lines per functional category
-    """
-
+def plot_functional_regions(conservation_scores, final_candidates, features_df, conserved_threshold=None, hotspot_threshold=None, top_n=10): 
     fig, ax = plt.subplots(figsize=(15, 6))
 
     x = np.arange(len(conservation_scores))
 
-    # ===== 1. Conservation line =====
+    # conservation line
     ax.plot(x, conservation_scores, color="#2563eb", linewidth=1.5, label="Conservation")
 
-    # ===== 2. Define functional categories (each gets a track) =====
-    categories = [
-        "Domain",
-        "Binding site",
-        "Glycosylation",
-        "Functional site",
-        "Region",
-        "Membrane/topology",
-        "Disulfide bond"
-    ]
+    # functional categories 
+    categories = ["Domain", "Binding site", "Glycosylation", "Functional site", "Region", "Membrane/topology", "Disulfide bond"]
 
     y_positions = {cat: -(i + 1) * 0.3 for i, cat in enumerate(categories)}
 
-    color_map = {
-        "Domain": "#60a5fa",
-        "Binding site": "#22c55e",
-        "Glycosylation": "#f59e0b",
-        "Functional site": "#ef4444",
-        "Region": "#a78bfa",
-        "Membrane/topology": "#06b6d4",
-        "Disulfide bond": "#ec4899"
-    }
+    color_map = {"Domain": "#60a5fa", "Binding site": "#22c55e", "Glycosylation": "#f59e0b", "Functional site": "#ef4444", "Region": "#a78bfa", "Membrane/topology": "#06b6d4", "Disulfide bond": "#ec4899"}
 
-    # ===== 3. Plot horizontal feature lines =====
+    # horizontal feature lines
     if features_df is not None and not features_df.empty:
         for _, feat in features_df.iterrows():
             try:
@@ -1576,7 +1470,7 @@ def plot_functional_regions(conservation_scores, final_candidates, features_df, 
                 alpha=0.9
             )
 
-    # ===== 4. Candidate regions (separate track) =====
+    # candidate regions
     for _, row in final_candidates.head(top_n).iterrows():
         start = int(row["start"])
         end = int(row["end"])
@@ -1600,14 +1494,12 @@ def plot_functional_regions(conservation_scores, final_candidates, features_df, 
             fontweight="bold"
         )
 
-    # ===== 5. Y-axis labels =====
     yticks = [0] + list(y_positions.values())
     ylabels = ["Conservation"] + list(y_positions.keys())
 
     ax.set_yticks(yticks)
     ax.set_yticklabels(ylabels)
 
-    # ===== 6. Styling =====
     ax.set_xlabel("Alignment position")
     ax.set_title("Evidence Map (Track View)")
     ax.grid(axis="x", alpha=0.2)
@@ -1615,35 +1507,8 @@ def plot_functional_regions(conservation_scores, final_candidates, features_df, 
     fig.tight_layout()
     return fig
 
-
-
-def build_interactive_evidence_map(
-    conservation_scores,
-    final_candidates,
-    features_df,
-    conserved_threshold,
-    hotspot_threshold,
-    selected_categories=None,
-    top_n=20
-):
-    """
-    Interactive Plotly evidence map:
-    - Conservation curve with conserved/hotspot thresholds
-    - Candidate track
-    - Functional tracks with hover descriptions from UniProt
-    """
-
-    categories = [
-        "Domain",
-        "Binding site",
-        "Glycosylation",
-        "Functional site",
-        "Region",
-        "Motif",
-        "Membrane/topology",
-        "Disulfide bond",
-        "Other"
-    ]
+def interactive_map(conservation_scores, final_candidates, features_df, conserved_threshold, hotspot_threshold, selected_categories=None, top_n=20):
+    categories = ["Domain", "Binding site", "Glycosylation", "Functional site", "Region", "Motif", "Membrane/topology", "Disulfide bond", "Other"]
 
     if selected_categories is None:
         selected_categories = categories
@@ -1765,7 +1630,7 @@ def build_interactive_evidence_map(
 
             y = y_map[category]
             color = color_map.get(category, color_map["Other"])
-            weight = functional_feature_weight(category)
+            weight = functional_weight(category)
 
             fig.add_trace(go.Scatter(
                 x=[start, end],
@@ -1823,9 +1688,7 @@ def build_interactive_evidence_map(
 
     return fig
 
-
-def plot_candidate_score_breakdown(final_candidates, top_n=15):
-    """Horizontal bar chart for top candidate scores."""
+def plot_cand_score_ranking(final_candidates, top_n=15):
     top = final_candidates.head(top_n).copy()
     if top.empty:
         fig, ax = plt.subplots(figsize=(10, 3))
@@ -1852,9 +1715,7 @@ def plot_candidate_score_breakdown(final_candidates, top_n=15):
     fig.tight_layout()
     return fig
 
-
-def plot_candidate_feature_fractions(final_candidates, top_n=12):
-    """Stacked bar chart showing conservation/epitope/functional/hotspot components."""
+def plot_cand_feature_fractions(final_candidates, top_n=12):
     top = final_candidates.head(top_n).copy()
     if top.empty:
         fig, ax = plt.subplots(figsize=(10, 3))
@@ -1886,8 +1747,7 @@ def plot_candidate_feature_fractions(final_candidates, top_n=12):
     fig.tight_layout()
     return fig
 
-
-def plot_region_composition_pie(property_df):
+def plot_biochem_pie(property_df):
     """Pie chart for biochemical material profile."""
     if property_df is None or property_df.empty:
         fig, ax = plt.subplots(figsize=(5, 4))
@@ -1915,6 +1775,8 @@ def plot_region_composition_pie(property_df):
     return fig
 
 
+
+## Part 5: 
 def fetch_uniprot_features(accession):
     if not accession:
         return pd.DataFrame()
@@ -1944,8 +1806,6 @@ def fetch_uniprot_features(accession):
 
     return pd.DataFrame(rows)
 
-
-
 AA3_TO_1 = {
     "ALA": "A", "ARG": "R", "ASN": "N", "ASP": "D", "CYS": "C",
     "GLN": "Q", "GLU": "E", "GLY": "G", "HIS": "H", "ILE": "I",
@@ -1954,17 +1814,16 @@ AA3_TO_1 = {
     "SEC": "U", "PYL": "O"
 }
 
-
+# download a PDB mmCIF file and extract the real residue numbers for one chain
 @st.cache_data(show_spinner=False)
-def fetch_pdb_chain_sequence(pdb_id, chain):
-    """Download a PDB mmCIF file and extract the real residue numbers for one chain."""
+def fetch_pdb_chain(pdb_id, chain):
     pdb_id = pdb_id.upper().strip()
     chain = chain.strip()
 
     cif_url = f"https://files.rcsb.org/download/{pdb_id}.cif"
     response = requests.get(cif_url, timeout=30)
     if response.status_code != 200:
-        raise ValueError(f"Could not download structure {pdb_id} from RCSB PDB.")
+        raise ValueError(f"Could not download structure {pdb_id} from PDB.")
 
     with tempfile.NamedTemporaryFile(delete=False, suffix=".cif") as tmp:
         tmp.write(response.content)
@@ -1991,13 +1850,12 @@ def fetch_pdb_chain_sequence(pdb_id, chain):
             residues.append(residue.id[1])
 
     if not sequence:
-        raise ValueError(f"No amino-acid residues found for chain {chain} in {pdb_id}.")
+        raise ValueError(f"No amino acid residues found for chain {chain} in {pdb_id}.")
 
     return "".join(sequence), residues
 
-
+# mapping MSA alignment positions to real PDB residue numbers
 def map_alignment_region_to_pdb_residues(ref_aligned_sequence, region_start, region_end, pdb_id, chain):
-    """Map MSA alignment positions to real PDB residue numbers."""
     ref_aligned_sequence = str(ref_aligned_sequence)
     ref_sequence = ref_aligned_sequence.replace("-", "")
 
@@ -2009,18 +1867,10 @@ def map_alignment_region_to_pdb_residues(ref_aligned_sequence, region_start, reg
             ref_pos += 1
             aln_to_ref[aln_pos] = ref_pos
 
-    pdb_sequence, pdb_residue_numbers = fetch_pdb_chain_sequence(pdb_id, chain)
+    pdb_sequence, pdb_residue_numbers = fetch_pdb_chain(pdb_id, chain)
 
     # align ungapped ref seq to the seq present in the PDB chain
-    aln = pairwise2.align.globalms(
-        ref_sequence,
-        pdb_sequence,
-        2,
-        -1,
-        -10,
-        -0.5,
-        one_alignment_only=True
-    )[0]
+    aln = pairwise2.align.globalms(ref_sequence, pdb_sequence, 2, -1, -10, -0.5, one_alignment_only=True)[0]
 
     ref_aln = aln.seqA
     pdb_aln = aln.seqB
@@ -2056,17 +1906,14 @@ def map_alignment_region_to_pdb_residues(ref_aligned_sequence, region_start, reg
     mapped_residues = list(dict.fromkeys(mapped_residues))
     return mapped_residues, unmapped_alignment_positions
 
-
-
-def extract_region_sequence_from_alignment(ref_aligned_sequence, region_start, region_end):
-    """Extract the selected candidate region from the reference aligned sequence."""
+# extract the selected cand region from the ref aligned sequence
+def extract_region(ref_aligned_sequence, region_start, region_end):
     region = str(ref_aligned_sequence)[int(region_start):int(region_end) + 1]
     ungapped_region = region.replace("-", "")
     return region, ungapped_region
 
-
+# summarize the amino acid composition and biochemical properties of the selected region
 def summarize_region_composition(sequence):
-    """Summarize amino-acid composition and biochemical material properties."""
     sequence = sequence.replace("-", "").upper()
     length = len(sequence)
 
@@ -2096,16 +1943,12 @@ def summarize_region_composition(sequence):
 
     aa_rows = []
     for aa, count in sorted(aa_counts.items()):
-        aa_rows.append({
-            "Amino acid": aa,
-            "Count": count,
-            "Percentage": round((count / length) * 100, 2)
-        })
+        aa_rows.append({"Amino acid": aa, "Count": count, "Percentage": round((count / length) * 100, 2)})
 
     return pd.DataFrame(property_rows), pd.DataFrame(aa_rows)
 
-
-def show_3d_structure(pdb_id, chain, highlight_start, highlight_end, ref_aligned_sequence=None):
+# visualize the selected region on the 3D structure
+def show_3d(pdb_id, chain, highlight_start, highlight_end, ref_aligned_sequence=None):
     if not HAS_3D:
         st.warning("3D viewer is not installed. Run: pip install py3Dmol stmol")
         return
@@ -2151,7 +1994,7 @@ def show_3d_structure(pdb_id, chain, highlight_start, highlight_end, ref_aligned
             )
 
     except Exception as e:
-        st.warning(f"Could not perform sequence-to-structure mapping: {e}")
+        st.warning(f"Could not perform sequence to structure mapping: {e}")
         st.info("Falling back to approximate highlighting using the original alignment positions.")
 
         view = py3Dmol.view(query=f"pdb:{pdb_id}")
@@ -2168,9 +2011,9 @@ def show_home_page():
     st.markdown('<div class="section-card">', unsafe_allow_html=True)
     st.subheader("Research Dashboard Overview")
     st.write(
-        "VaxRegion Lab helps prioritize viral protein regions that may be useful for vaccine-target investigation. "
+        "VaxRegion Lab helps prioritize viral protein regions that may be useful for vaccine target investigation. "
         "The app connects multiple biological evidence layers: sequence conservation, immune epitope overlap, "
-        "functional annotation, structural context, amino-acid composition, and PubMed literature support."
+        "functional annotation, structural context, amino acid composition, and PubMed literature support."
     )
     st.markdown('</div>', unsafe_allow_html=True)
 
@@ -2179,7 +2022,7 @@ def show_home_page():
         <div class="feature-card"><div class="feature-title">Conservation Engine</div><div class="feature-text">Retrieves NCBI protein sequences, aligns them with MUSCLE,  and computes per-position Shannon entropy conservation scores to identify stable regions across strains.</div></div>
         <div class="feature-card"><div class="feature-title">Immune Evidence Layer</div><div class="feature-text">Integrates B-cell and T-cell epitope intervals so candidate windows are not only conserved, but also immunologically relevant.</div></div>
         <div class="feature-card"><div class="feature-title">Weighted Functional Scoring</div><div class="feature-text">Converts UniProt domains, binding sites, glycosylation sites, motifs, and topology features into weighted functional fractions.</div></div>
-        <div class="feature-card"><div class="feature-title">Structure-Aware Mapping</div><div class="feature-text">Maps candidate regions from alignment coordinates to PDB residue numbers and highlights them on an interactive 3D protein structure.</div></div>
+        <div class="feature-card"><div class="feature-title">Structure Aware Mapping</div><div class="feature-text">Maps candidate regions from alignment coordinates to PDB residue numbers and highlights them on an interactive 3D protein structure.</div></div>
         <div class="feature-card"><div class="feature-title">Composition Profile</div><div class="feature-text">Summarizes hydrophobic, polar, charged, aromatic, sulfur-containing, and flexible residues for biological interpretation.</div></div>
         <div class="feature-card"><div class="feature-title">AI Literature Companion</div><div class="feature-text">Searches PubMed using the selected virus/protein and summarizes vaccine-related findings when an OpenAI API key is configured.</div></div>
     </div>
@@ -2189,12 +2032,11 @@ def show_home_page():
     st.subheader("How to use it")
     st.markdown("""
     <div class="workflow-step"><b>1.</b> Open <b>Analysis</b> from the top navigation.</div>
-    <div class="workflow-step"><b>2.</b> Enter the virus/protein name and epitope regions; UniProt/PDB IDs are suggested automatically and can be manually overridden.</div>
+    <div class="workflow-step"><b>2.</b> Enter the virus protein name and epitope regions; UniProt PDB IDs are suggested automatically and can be manually overridden.</div>
     <div class="workflow-step"><b>3.</b> Click <b>Run Analysis</b>.</div>
     <div class="workflow-step"><b>4.</b> Explore conservation plots, candidate tables, functional annotations, literature evidence, and 3D structure highlights.</div>
     """, unsafe_allow_html=True)
     st.markdown('</div>', unsafe_allow_html=True)
-
 
 def show_methodology_page():
     st.markdown('<div class="section-card">', unsafe_allow_html=True)
@@ -2205,19 +2047,16 @@ def show_methodology_page():
     """, unsafe_allow_html=True)
     st.markdown("""
     <div class="workflow-step"><b>Data collection:</b> sequences are retrieved from NCBI Protein using the selected organism and protein name.</div>
-    <div class="workflow-step"><b>Alignment:</b> sequences are aligned with MUSCLE to compare amino acid positions across variants/homologs.</div>
+    <div class="workflow-step"><b>Alignment:</b> sequences are aligned with MUSCLE to compare amino acid positions across variants & homologs.</div>
     <div class="workflow-step"><b>Conservation:</b> Shannon entropy is converted into a conservation score, where higher values indicate more stable positions.</div>
-    <div class="workflow-step"><b>Epitope mapping:</b> known B-cell and T-cell epitope intervals are projected onto the aligned protein positions.</div>
-    <div class="workflow-step"><b>Scoring:</b> sliding windows are ranked using conservation, epitope overlap, functional-region overlap, and hotspot penalty.</div>
+    <div class="workflow-step"><b>Epitope mapping:</b> known B cell and T cell epitope intervals are projected onto the aligned protein positions.</div>
+    <div class="workflow-step"><b>Scoring:</b> sliding windows are ranked using conservation, epitope overlap, functional region overlap, and hotspot penalty.</div>
     <div class="workflow-step"><b>Functional layer:</b> UniProt features are checked for overlap with top candidate regions.</div>
     <div class="workflow-step"><b>Structural layer:</b> candidate regions are mapped from the MSA reference sequence to PDB residue numbers before 3D highlighting.</div>
     """, unsafe_allow_html=True)
     st.markdown('</div>', unsafe_allow_html=True)
 
-
-
 def get_openai_api_key():
-    """Read OpenAI API key from Streamlit secrets or environment variables."""
     api_key = None
     try:
         api_key = st.secrets.get("OPENAI_API_KEY", None)
@@ -2225,10 +2064,9 @@ def get_openai_api_key():
         api_key = None
     return api_key or os.getenv("OPENAI_API_KEY")
 
-
+# searching PubMed and return titles, abstracts, journals, years, and links
 @st.cache_data(show_spinner=False)
 def search_pubmed_articles(disease_query, email, max_results=8, years_back=5):
-    """Search PubMed and return titles, abstracts, journals, years, and links."""
     if not disease_query.strip():
         return pd.DataFrame()
 
@@ -2285,9 +2123,8 @@ def search_pubmed_articles(disease_query, email, max_results=8, years_back=5):
 
     return pd.DataFrame(rows)
 
-
+# summarize PubMed abstracts using OpenAI if available otherwise use extractive fallback
 def summarize_pubmed_findings(articles_df, disease_query):
-    """Summarize PubMed abstracts using OpenAI if available; otherwise use extractive fallback."""
     if articles_df.empty:
         return "No articles were found to summarize."
 
@@ -2314,7 +2151,7 @@ You are a bioinformatics research assistant.
 Topic: {disease_query}
 
 Using only the PubMed titles and abstracts below, summarize:
-1. Main vaccine-related findings
+1. Main vaccine related findings
 2. Important proteins, epitopes, immune mechanisms, or biomarkers
 3. How the evidence may support vaccine target prioritization
 4. Limitations or uncertainties
@@ -2359,13 +2196,12 @@ PubMed evidence:
 
     return "\n".join([f"- {s}" for s in top_sentences])
 
-
 def show_disease_explorer_page():
     st.markdown('<div class="section-card">', unsafe_allow_html=True)
     st.subheader("AI Literature Explorer")
     st.write(
         "Search PubMed for a disease, virus, or protein, retrieve recent biomedical papers, "
-        "and generate an OpenAI-powered summary from the article abstracts when an API key is configured. "
+        "and generate an OpenAI powered summary from the article abstracts when an API key is configured. "
         "By default, the query uses the virus and protein selected in the sidebar."
     )
 
@@ -2450,7 +2286,7 @@ def show_disease_explorer_page():
 
         st.markdown('</div>', unsafe_allow_html=True)
 
-# main app
+## Part 6: Main page routing
 if page == "Home":
     show_home_page()
 
@@ -2463,10 +2299,7 @@ elif page == "Disease Explorer":
 elif page == "Analysis":
     st.markdown('<div class="section-card">', unsafe_allow_html=True)
     st.subheader("Run the Prioritization Pipeline")
-    st.write(
-        "The current setup will analyze the selected virus and protein, retrieve matching sequences, compute conservation, "
-        "score candidate windows, integrate UniProt/PDB mappings, and generate interactive results."
-    )
+    st.write("The current setup will analyze the selected virus and protein, retrieve matching sequences, compute conservation, score candidate windows, integrate UniProt PDB mappings, and generate interactive results.")
     setup_col1, setup_col2, setup_col3 = st.columns(3)
     setup_col1.metric("Virus", virus)
     setup_col2.metric("Protein", protein)
@@ -2509,17 +2342,9 @@ elif page == "Analysis":
                 features_df["source_accession"] = uniprot_accession
             functional_map = build_functional_map(features_df, len(conservation_scores))
             windows_df = score_windows(
-                conservation_scores,
-                epitope_map,
-                functional_map,
-                window_size,
-                window_step,
-                hotspot_threshold,
-                coef_cons,
-                coef_epitope,
-                coef_functional,
-                coef_hotspot
-            )
+                conservation_scores, epitope_map, functional_map, window_size,
+                window_step, hotspot_threshold, coef_cons, coef_epitope,
+                coef_functional, coef_hotspot)
             ranked_df = windows_df.sort_values(
                 by=["score", "avg_conservation", "functional_fraction", "hotspot_fraction"],
                 ascending=[False, False, False, True]
@@ -2602,33 +2427,16 @@ elif page == "Analysis":
                 unsafe_allow_html=True
             )
 
-            all_functional_categories = [
-                "Domain",
-                "Binding site",
-                "Glycosylation",
-                "Functional site",
-                "Region",
-                "Motif",
-                "Membrane/topology",
-                "Disulfide bond",
-                "Other"
-            ]
+            all_functional_categories = ["Domain", "Binding site", "Glycosylation", "Functional site", "Region", "Motif", "Membrane/topology", "Disulfide bond", "Other"]
 
             selected_functional_categories = st.multiselect(
                 "Toggle functional tracks",
                 all_functional_categories,
-                default=[
-                    "Domain",
-                    "Binding site",
-                    "Glycosylation",
-                    "Functional site",
-                    "Region",
-                    "Motif"
-                ],
+                default=["Domain", "Binding site", "Glycosylation", "Functional site",  "Region", "Motif"],
                 key="overview_functional_track_filter"
             )
 
-            evidence_fig = build_interactive_evidence_map(
+            evidence_fig = interactive_map(
                 conservation_scores,
                 final_candidates,
                 features_df,
@@ -2659,15 +2467,15 @@ elif page == "Analysis":
             except TypeError:
                 st.plotly_chart(evidence_fig, use_container_width=True, key="interactive_evidence_map")
 
-            st.caption("Click-selection requires a recent Streamlit version. If it does not update the 3D candidate, use the 3D dropdown selector.")
+            st.caption("Click selection requires a recent Streamlit version. If it does not update the 3D candidate, use the 3D dropdown selector.")
 
             viz_col1, viz_col2 = st.columns([1, 1])
             with viz_col1:
                 st.subheader("Top Candidate Scores")
-                st.pyplot(plot_candidate_score_breakdown(final_candidates, top_n=15))
+                st.pyplot(plot_cand_score_ranking(final_candidates, top_n=15))
             with viz_col2:
                 st.subheader("Evidence Components")
-                st.pyplot(plot_candidate_feature_fractions(final_candidates, top_n=12))
+                st.pyplot(plot_cand_feature_fractions(final_candidates, top_n=12))
 
             with st.expander("Show simple conservation-only plot"):
                 st.pyplot(plot_conservation(conservation_scores, conserved_threshold, hotspot_threshold))
@@ -2677,7 +2485,7 @@ elif page == "Analysis":
 
         elif result_view == "Candidate Table":
             st.markdown('<div class="section-card">', unsafe_allow_html=True)
-            st.subheader("Ranked Non-Redundant Candidate Regions")
+            st.subheader("Ranked Non Redundant Candidate Regions")
             st.dataframe(final_candidates, use_container_width=True)
             csv = final_candidates.to_csv(index=False).encode("utf-8")
             st.download_button("Download candidate regions CSV", csv, "candidate_regions.csv", "text/csv")
@@ -2698,7 +2506,7 @@ elif page == "Analysis":
                 else:
                     st.caption(f"Displayed UniProt accession: {saved_uniprot_accession}")
                     st.subheader("Weighted UniProt Feature Categories")
-                    feature_summary_df = summarize_functional_feature_types(features_df)
+                    feature_summary_df = summary_table(features_df)
                     st.dataframe(feature_summary_df, use_container_width=True, hide_index=True)
 
                     st.subheader("Candidate Functional Notes")
@@ -2756,7 +2564,7 @@ elif page == "Analysis":
                     )
 
                     st.plotly_chart(
-                        build_interactive_evidence_map(
+                        interactive_map(
                             conservation_scores,
                             final_candidates,
                             features_df,
@@ -2786,7 +2594,7 @@ elif page == "Analysis":
                 • Gray = full protein structure<br>
                 • Red = selected candidate region mapped from the sequence alignment to PDB residue numbers<br>
                 • Missing/unmapped residues may occur because experimental structures often lack flexible loops or unresolved regions<br>
-                • The composition table shows whether the selected region is enriched in hydrophobic, polar, charged, aromatic, or sulfur-containing residues<br>                • A strong candidate is ideally conserved, epitope-overlapping, functionally relevant, structurally accessible, and biologically interpretable
+                • The composition table shows whether the selected region is enriched in hydrophobic, polar, charged, aromatic, or sulfur containing residues<br>                • A strong candidate is ideally conserved, epitope-overlapping, functionally relevant, structurally accessible, and biologically interpretable
                 </div>
                 """,
                 unsafe_allow_html=True
@@ -2812,7 +2620,7 @@ elif page == "Analysis":
                 h_start = int(selected["start"])
                 h_end = int(selected["end"])
 
-                aligned_region, region_sequence = extract_region_sequence_from_alignment(
+                aligned_region, region_sequence = extract_region(
                     ref_aligned_sequence,
                     h_start,
                     h_end
@@ -2853,19 +2661,19 @@ elif page == "Analysis":
                         st.info("No sequence composition available for this candidate.")
                     else:
                         st.dataframe(property_df, use_container_width=True, hide_index=True)
-                        st.pyplot(plot_region_composition_pie(property_df))
+                        st.pyplot(plot_biochem_pie(property_df))
 
-                with st.expander("Amino-acid composition details"):
+                with st.expander("Amino acid composition details"):
                     if region_sequence:
                         st.dataframe(aa_df, use_container_width=True, hide_index=True)
                     else:
-                        st.info("No amino-acid composition to display.")
+                        st.info("No amino acid composition to display.")
 
                 st.markdown(
                     """
                     <div class="small-note">
                     <b>How this supports interpretation:</b><br>
-                    Hydrophobic-rich regions may be buried inside the protein core, while charged or polar-rich regions are more likely to be solvent-exposed.
+                    Hydrophobic rich regions may be buried inside the protein core, while charged or polar rich regions are more likely to be solvent exposed.
                     Aromatic and charged residues can also contribute to antibody recognition, binding interactions, or structural stability.
                     This composition layer helps interpret whether the selected vaccine candidate is only statistically strong, or also biologically meaningful.
                     </div>
@@ -2874,7 +2682,7 @@ elif page == "Analysis":
                 )
 
                 if saved_pdb_id:
-                    show_3d_structure(saved_pdb_id, saved_pdb_chain, h_start, h_end, ref_aligned_sequence)
+                    show_3d(saved_pdb_id, saved_pdb_chain, h_start, h_end, ref_aligned_sequence)
                     st.caption("Residues are mapped from the MSA reference sequence to the selected PDB chain using pairwise sequence alignment. This makes the 3D highlighting more rigorous than directly assuming alignment positions equal PDB residue numbers.")
                 else:
                     st.info("No PDB ID is available. Enable manual database mapping in the sidebar and enter a PDB ID.")
